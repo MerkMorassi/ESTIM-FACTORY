@@ -26,11 +26,14 @@ async function createServer() {
   // AI Command / Protocol Generation Endpoint
   app.post('/api/ai/command', async (req, res) => {
     try {
-      const { prompt, currentState } = req.body;
-      
+      const { prompt, currentState, model } = req.body;
+      if (!prompt) {
+        return res.status(400).json({ error: 'Missing prompt' });
+      }
+
       const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: prompt,
+        model: model || "gemini-3.8-flash",
+        contents: [{ role: 'user', parts: [{ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) }] }],
         config: {
           systemInstruction: `You are the AI Co-Pilot for the Signal Telemetry Profiler, a high-precision stimulation system.
           Current System State: ${JSON.stringify(currentState)}
@@ -73,27 +76,34 @@ async function createServer() {
   // TTS Endpoint
   app.post('/api/ai/tts', async (req, res) => {
     try {
-      const { text } = req.body;
+      const { text, voice, model } = req.body;
+      if (!text || typeof text !== 'string' || text.trim() === '') {
+        return res.json({ audio: null }); // Or return a 400, but silence is often better for TTS fallback
+      }
+
       const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash-lite-tts",
+        model: model || "gemini-3.8-flash-lite-tts",
         contents: [
           {
             role: "user",
-            parts: [{ text, speechMetadata: { style: "Calm, clinical, professional laboratory assistant" } }],
+            parts: [{ text: text.trim(), speechMetadata: { style: "Calm, clinical, professional laboratory assistant" } }],
           },
         ],
         config: {
           responseModalities: ["AUDIO"],
           speechConfig: {
             voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: "Kore" },
+              prebuiltVoiceConfig: { voiceName: voice || "Kore" },
             },
           },
         },
       });
 
       const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      res.json({ audio: base64Audio });
+      if (!base64Audio) {
+        console.warn('TTS: No audio data returned from Gemini');
+      }
+      res.json({ audio: base64Audio || null });
     } catch (error: any) {
       console.error('TTS Error:', error);
       res.status(500).json({ error: error.message });
@@ -103,18 +113,25 @@ async function createServer() {
   // STT Endpoint
   app.post('/api/ai/stt', async (req, res) => {
     try {
-      const { audio } = req.body; // base64 webm/wav
+      const { audio, model } = req.body; // base64 webm/wav
+      if (!audio) {
+        return res.status(400).json({ error: 'Missing audio data' });
+      }
+
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-transcribe",
-        contents: {
-          parts: [
-            { inlineData: { mimeType: "audio/webm", data: audio } },
-            { text: "Transcribe this voice command for a stimulation system. Only return the transcribed text." }
-          ]
-        },
+        model: model || "gemini-3.5-transcribe",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { inlineData: { mimeType: "audio/webm", data: audio } },
+              { text: "Transcribe this voice command for a stimulation system. Only return the transcribed text." }
+            ]
+          }
+        ],
       });
 
-      res.json({ text: response.text });
+      res.json({ text: response.text || "" });
     } catch (error: any) {
       console.error('STT Error:', error);
       res.status(500).json({ error: error.message });

@@ -17,6 +17,8 @@ import {
   Sparkles
 } from 'lucide-react';
 
+import { aiSettingsStorage, AiSettings } from '../lib/aiSettings';
+
 interface AiCoPilotProps {
   currentState: any;
   onExecuteCommand: (command: any) => void;
@@ -37,11 +39,20 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [useVoiceFeedback, setUseVoiceFeedback] = useState(true);
+  const [aiSettings, setAiSettings] = useState<AiSettings>(aiSettingsStorage.get());
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  useEffect(() => {
+    // Sync settings on focus or mount
+    const syncSettings = () => {
+      setAiSettings(aiSettingsStorage.get());
+    };
+    window.addEventListener('focus', syncSettings);
+    return () => window.removeEventListener('focus', syncSettings);
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -80,7 +91,7 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
         onLoadProtocol(result.data);
       }
 
-      if (useVoiceFeedback) {
+      if (aiSettings.useVoiceFeedback) {
         speak(result.message);
       }
     } catch (error) {
@@ -92,23 +103,60 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
   };
 
   const speak = async (text: string) => {
-    if (!useVoiceFeedback) return;
+    if (!aiSettings.useVoiceFeedback || !text || text.trim() === '') return;
     setIsSpeaking(true);
+
+    // Fallback function for Web Speech API
+    const webSpeechFallback = () => {
+      console.log('Using Web Speech API Fallback');
+      const utterance = new SpeechSynthesisUtterance(text);
+      
+      // Try to find the requested fallback voice
+      const voices = window.speechSynthesis.getVoices();
+      const preferred = voices.find(v => v.name.includes(aiSettings.fallbackVoice) || v.name.includes('English'));
+      if (preferred) utterance.voice = preferred;
+      
+      utterance.onend = () => setIsSpeaking(false);
+      utterance.onerror = () => setIsSpeaking(false);
+      window.speechSynthesis.speak(utterance);
+    };
+
+    if (!navigator.onLine) {
+      webSpeechFallback();
+      return;
+    }
+
     try {
       const response = await fetch('/api/ai/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
+        body: JSON.stringify({ 
+          text, 
+          voice: aiSettings.voice,
+          model: aiSettings.model.includes('flash') ? 'gemini-3.8-flash-lite-tts' : 'gemini-3.8-flash-tts'
+        })
       });
+      
+      if (!response.ok) throw new Error('TTS Service Unavailable');
+      
       const { audio } = await response.json();
       if (audio) {
         const audioObj = new Audio(`data:audio/wav;base64,${audio}`);
         audioObj.onended = () => setIsSpeaking(false);
-        audioObj.play();
+        audioObj.onerror = () => {
+          console.warn('Audio element error, falling back to Web Speech');
+          webSpeechFallback();
+        };
+        audioObj.play().catch(e => {
+          console.warn('Audio play error, falling back to Web Speech:', e);
+          webSpeechFallback();
+        });
+      } else {
+        webSpeechFallback();
       }
     } catch (error) {
-      console.error('TTS Error:', error);
-      setIsSpeaking(false);
+      console.error('TTS Error, attempting fallback:', error);
+      webSpeechFallback();
     }
   };
 
@@ -153,7 +201,7 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
       const response = await fetch('/api/ai/stt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio: base64Audio })
+        body: JSON.stringify({ audio: base64Audio, model: 'gemini-3.5-transcribe' })
       });
       const { text } = await response.json();
       if (text) {
@@ -177,19 +225,23 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
           </div>
           <div>
             <span className="text-xs font-black text-slate-100 uppercase tracking-widest">Neural Co-Pilot</span>
-            <div className="flex items-center gap-1.5 text-[8px] text-cyan-600 font-bold uppercase">
-              <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse" />
-              Gemini 3.8-Flash Link Active
-            </div>
+              <div className="flex items-center gap-1.5 text-[8px] text-cyan-600 font-bold uppercase">
+                <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse" />
+                {aiSettings.model.toUpperCase()} Active
+              </div>
           </div>
         </div>
         <div className="flex items-center gap-3">
           <button 
-            onClick={() => setUseVoiceFeedback(!useVoiceFeedback)}
-            className={`p-1.5 rounded-lg transition-all ${useVoiceFeedback ? 'text-cyan-400 bg-cyan-950/30' : 'text-slate-600 hover:text-slate-400'}`}
+            onClick={() => {
+              const newSettings = { ...aiSettings, useVoiceFeedback: !aiSettings.useVoiceFeedback };
+              setAiSettings(newSettings);
+              aiSettingsStorage.save(newSettings);
+            }}
+            className={`p-1.5 rounded-lg transition-all ${aiSettings.useVoiceFeedback ? 'text-cyan-400 bg-cyan-950/30' : 'text-slate-600 hover:text-slate-400'}`}
             title="Toggle Voice Feedback"
           >
-            {useVoiceFeedback ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+            {aiSettings.useVoiceFeedback ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
           </button>
           <div className="text-[10px] text-slate-500 font-bold bg-slate-900 px-2 py-1 rounded border border-slate-800">
             {isSpeaking ? 'SPEAKING...' : 'STANDBY'}

@@ -51,8 +51,18 @@ import {
   SaveAll,
   Activity,
   BrainCircuit,
+  Settings as SettingsIcon,
+  RotateCcw,
+  RotateCw,
 } from 'lucide-react';
 import { midiService, MidiMappingType } from './audio/midiService';
+import { Settings } from './components/Settings';
+import { useUndoRedo } from './lib/useUndoRedo';
+
+interface SessionState {
+  params: { left: SignalParameters; right: SignalParameters };
+  steps: { left: SequencerStep[]; right: SequencerStep[] };
+}
 
 const DEFAULT_PARAMS: SignalParameters = {
   carrierFreq: 100,
@@ -90,14 +100,20 @@ const DEFAULT_STEPS: SequencerStep[] = [
 ];
 
 export default function App() {
-  const [params, setParams] = useState<{ left: SignalParameters; right: SignalParameters }>({
-    left: { ...DEFAULT_PARAMS, carrierFreq: 2500, masterVolume: 0.7 },
-    right: { ...DEFAULT_PARAMS, carrierFreq: 100, masterVolume: 0.7 },
+  const { state: appState, setState: setAppState, undo, redo, canUndo, canRedo } = useUndoRedo<SessionState>({
+    params: {
+      left: { ...DEFAULT_PARAMS, carrierFreq: 2500, masterVolume: 0.7 },
+      right: { ...DEFAULT_PARAMS, carrierFreq: 100, masterVolume: 0.7 },
+    },
+    steps: {
+      left: DEFAULT_STEPS.map(s => ({ ...s })),
+      right: DEFAULT_STEPS.map(s => ({ ...s })),
+    }
   });
-  const [steps, setSteps] = useState<{ left: SequencerStep[]; right: SequencerStep[] }>({
-    left: DEFAULT_STEPS.map(s => ({ ...s })),
-    right: DEFAULT_STEPS.map(s => ({ ...s })),
-  });
+
+  const params = appState.params;
+  const steps = appState.steps;
+
   const [impedanceModel, setImpedanceModel] = useState<ImpedanceModel>({
     nominalResistance: 800,
     capacitanceNf: 33,
@@ -109,7 +125,7 @@ export default function App() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [currentStep, setCurrentStep] = useState<{ left: number; right: number }>({ left: 0, right: 0 });
   const [isExporting, setIsExporting] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'profiler' | 'sequencer' | 'spectrum' | 'standalone_module' | 'ayurvedic' | 'composer' | 'player' | 'midi' | 'ai'>('player');
+  const [activeTab, setActiveTab] = useState<'profiler' | 'sequencer' | 'spectrum' | 'standalone_module' | 'ayurvedic' | 'composer' | 'player' | 'midi' | 'ai' | 'settings'>('player');
   const [isTestingAudio, setIsTestingAudio] = useState<boolean>(false);
   const [midiStatus, setMidiStatus] = useState<'idle' | 'active' | 'denied'>('idle');
   const [midiLastCC, setMidiLastCC] = useState<string>('');
@@ -159,11 +175,11 @@ export default function App() {
           } else if (param === 'mode') {
             // Cycle modes: continuous -> burst -> sequenced -> sweep
             const modes: ModulationMode[] = ['continuous', 'burst', 'sequenced', 'sweep'];
-            const currentMode = params[activeChannel].mode;
+            const currentMode = appState.params[activeChannel].mode;
             const nextMode = modes[(modes.indexOf(currentMode) + 1) % modes.length];
             dispatchMode(activeChannel, nextMode);
           } else if (param === 'sync') {
-            dispatchSyncToMaster(activeChannel, !params[activeChannel].syncToMaster);
+            dispatchSyncToMaster(activeChannel, !appState.params[activeChannel].syncToMaster);
           } else if (param === 'channelFocus') {
             setActiveChannel(prev => prev === 'left' ? 'right' : 'left');
           }
@@ -189,6 +205,22 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        if (e.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        redo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo]);
+
   const handleMidiLearn = (param: MidiMappingType, channel: 'left' | 'right' | 'both') => {
     setIsLearning(true);
     midiService.startLearning(param, channel);
@@ -212,9 +244,12 @@ export default function App() {
   };
 
   const handleParamChange = (channel: 'left' | 'right', key: keyof SignalParameters, value: any) => {
-    setParams(prev => ({
+    setAppState(prev => ({
       ...prev,
-      [channel]: { ...prev[channel], [key]: value }
+      params: {
+        ...prev.params,
+        [channel]: { ...prev.params[channel], [key]: value }
+      }
     }));
     setActivePresetId(null);
   };
@@ -275,9 +310,12 @@ export default function App() {
   };
 
   const dispatchMasterBpm = (bpm: number) => {
-    setParams(prev => ({
-      left: { ...prev.left, masterBpm: bpm },
-      right: { ...prev.right, masterBpm: bpm },
+    setAppState(prev => ({
+      ...prev,
+      params: {
+        left: { ...prev.params.left, masterBpm: bpm },
+        right: { ...prev.params.right, masterBpm: bpm },
+      }
     }));
     engineRef.current?.setMasterBpm(bpm);
   };
@@ -288,7 +326,10 @@ export default function App() {
   };
 
   const dispatchStepsUpdate = (channel: 'left' | 'right', newSteps: SequencerStep[]) => {
-    setSteps(prev => ({ ...prev, [channel]: newSteps }));
+    setAppState(prev => ({
+      ...prev,
+      steps: { ...prev.steps, [channel]: newSteps }
+    }));
     engineRef.current?.updateSequencerSteps(channel, newSteps);
   };
   
@@ -313,7 +354,10 @@ export default function App() {
       burstDurationMs: preset.burstDurationMs,
     };
     
-    setParams(prev => ({ ...prev, [channel]: updated }));
+    setAppState(prev => ({
+      ...prev,
+      params: { ...prev.params, [channel]: updated }
+    }));
     
     if (engineRef.current) {
       engineRef.current.setCarrierFrequency(channel, preset.carrierFreq);
@@ -329,10 +373,13 @@ export default function App() {
 
   const handleSelectDualPreset = (preset: DualChannelPreset) => {
     setActivePresetId(preset.id);
-    setParams({
-      left: { ...params.left, ...preset.left, carrierWaveform: preset.left.carrierWave, modWaveform: preset.left.modWave },
-      right: { ...params.right, ...preset.right, carrierWaveform: preset.right.carrierWave, modWaveform: preset.right.modWave },
-    });
+    setAppState(prev => ({
+      ...prev,
+      params: {
+        left: { ...prev.params.left, ...preset.left, carrierWaveform: preset.left.carrierWave, modWaveform: preset.left.modWave },
+        right: { ...prev.params.right, ...preset.right, carrierWaveform: preset.right.carrierWave, modWaveform: preset.right.modWave },
+      }
+    }));
 
     if (engineRef.current) {
       (['left', 'right'] as const).forEach(ch => {
@@ -438,6 +485,26 @@ export default function App() {
               <Speaker className="w-3.5 h-3.5" />
               VERIFY OUTPUT
             </button>
+
+            {/* Undo/Redo */}
+            <div className="flex p-1 bg-[#101720] border border-[#1a2634] rounded-lg">
+              <button
+                onClick={undo}
+                disabled={!canUndo}
+                className={`p-1.5 rounded transition-all ${canUndo ? 'text-cyan-400 hover:bg-cyan-900/30' : 'text-slate-700 pointer-events-none'}`}
+                title="Undo (Ctrl+Z)"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+              <button
+                onClick={redo}
+                disabled={!canRedo}
+                className={`p-1.5 rounded transition-all ${canRedo ? 'text-cyan-400 hover:bg-cyan-900/30' : 'text-slate-700 pointer-events-none'}`}
+                title="Redo (Ctrl+Y)"
+              >
+                <RotateCw className="w-4 h-4" />
+              </button>
+            </div>
 
             {/* MIDI Status */}
             <div className={`flex items-center gap-2 px-3 py-1.5 rounded border text-[10px] font-bold ${midiStatus === 'active' ? 'bg-cyan-950/30 border-cyan-800 text-cyan-400' : 'bg-slate-900 border-slate-800 text-slate-600'}`}>
@@ -728,7 +795,7 @@ export default function App() {
             />
 
             <div className="flex items-center gap-2 border-b border-[#1a2634] pb-1 overflow-x-auto">
-              {(['player', 'composer', 'ai', 'midi', 'profiler', 'sequencer', 'spectrum', 'ayurvedic'] as const).map(t => (
+              {(['player', 'composer', 'ai', 'midi', 'profiler', 'sequencer', 'spectrum', 'ayurvedic', 'settings'] as const).map(t => (
                 <button key={t} onClick={() => setActiveTab(t)} className={`py-1.5 px-3 text-[10px] font-black rounded uppercase whitespace-nowrap ${activeTab === t ? 'bg-[#162433] text-cyan-300 border border-cyan-800' : 'text-slate-400 hover:text-slate-200 transition-colors'}`}>
                   {t === 'player' ? (
                     <span className="flex items-center gap-1.5">
@@ -739,6 +806,11 @@ export default function App() {
                     <span className="flex items-center gap-1.5">
                       <BrainCircuit className="w-3.5 h-3.5" />
                       AI Co-Pilot
+                    </span>
+                  ) : t === 'settings' ? (
+                    <span className="flex items-center gap-1.5">
+                      <SettingsIcon className="w-3.5 h-3.5" />
+                      Settings
                     </span>
                   ) : t}
                 </button>
@@ -773,6 +845,7 @@ export default function App() {
                 }}
               />
             )}
+            {activeTab === 'settings' && <Settings />}
           </div>
         </div>
       </main>
