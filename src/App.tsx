@@ -47,7 +47,9 @@ import {
   Music,
   PlayCircle,
   SaveAll,
+  Activity,
 } from 'lucide-react';
+import { midiService, MidiMappingType } from './audio/midiService';
 
 const DEFAULT_PARAMS: SignalParameters = {
   carrierFreq: 100,
@@ -103,6 +105,10 @@ export default function App() {
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'profiler' | 'sequencer' | 'spectrum' | 'standalone_module' | 'ayurvedic' | 'composer' | 'player'>('player');
   const [isTestingAudio, setIsTestingAudio] = useState<boolean>(false);
+  const [midiStatus, setMidiStatus] = useState<'idle' | 'active' | 'denied'>('idle');
+  const [midiLastCC, setMidiLastCC] = useState<string>('');
+  const [isLearning, setIsLearning] = useState<boolean>(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; param: MidiMappingType; channel: 'left' | 'right' | 'both' } | null>(null);
 
   const engineRef = useRef<SignalEngine | null>(null);
 
@@ -111,11 +117,57 @@ export default function App() {
     engine.setOnStepCallback('left', (step) => setCurrentStep(prev => ({ ...prev, left: step })));
     engine.setOnStepCallback('right', (step) => setCurrentStep(prev => ({ ...prev, right: step })));
     engineRef.current = engine;
+
+    const initMidi = async () => {
+      const granted = await midiService.requestAccess();
+      setMidiStatus(granted ? 'active' : 'denied');
+      
+      if (granted) {
+        midiService.setCallback((param, value, channel) => {
+          setMidiLastCC(`${param.toUpperCase()}`);
+          
+          if (param === 'masterVolume') {
+            dispatchMasterVolume(channel, value);
+          } else if (param === 'carrierFreq') {
+            const freq = Math.round(10 + (value * 3990)); // 10-4000
+            dispatchCarrierFreq(channel, freq);
+          } else if (param === 'modFreq') {
+            const freq = Math.round(1 + (value * 149)); // 1-150
+            dispatchModFreq(channel, freq);
+          } else if (param === 'modDepth') {
+            dispatchModDepth(channel, value);
+          }
+        });
+      }
+    };
+    
+    initMidi();
+
+    midiService.setLearnCallback((param, cc) => {
+      setMidiLastCC(`LEARNED CC ${cc}`);
+      setIsLearning(false);
+    });
+
+    const handleClickOutside = () => setContextMenu(null);
+    window.addEventListener('click', handleClickOutside);
+
     return () => {
       engine.destroy();
       engineRef.current = null;
+      window.removeEventListener('click', handleClickOutside);
     };
   }, []);
+
+  const handleMidiLearn = (param: MidiMappingType, channel: 'left' | 'right' | 'both') => {
+    setIsLearning(true);
+    midiService.startLearning(param, channel);
+    setContextMenu(null);
+  };
+
+  const onControlContextMenu = (e: React.MouseEvent, param: MidiMappingType, channel: 'left' | 'right' | 'both') => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, param, channel });
+  };
 
   const togglePower = async () => {
     if (!engineRef.current) return;
@@ -322,6 +374,15 @@ export default function App() {
               VERIFY OUTPUT
             </button>
 
+            {/* MIDI Status */}
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded border text-[10px] font-bold ${midiStatus === 'active' ? 'bg-cyan-950/30 border-cyan-800 text-cyan-400' : 'bg-slate-900 border-slate-800 text-slate-600'}`}>
+              <Activity className={`w-3.5 h-3.5 ${midiStatus === 'active' ? (isLearning ? 'animate-bounce text-amber-400' : 'animate-pulse') : ''}`} />
+              <div className="flex flex-col leading-none">
+                <span className={isLearning ? 'text-amber-400' : ''}>{isLearning ? 'LEARNING...' : `MIDI ${midiStatus.toUpperCase()}`}</span>
+                {midiLastCC && <span className="text-[8px] text-cyan-600 truncate max-w-[60px]">{midiLastCC}</span>}
+              </div>
+            </div>
+
             <button
               onClick={togglePower}
               className={`flex items-center gap-2 px-4 py-1.5 rounded font-bold text-xs tracking-wider transition-all shadow-md ${isRunning ? 'bg-rose-950 text-rose-300 border border-rose-700' : 'bg-emerald-950 text-emerald-300 border border-emerald-700'}`}
@@ -377,6 +438,7 @@ export default function App() {
                 <input
                   type="range" min={10} max={4000} step={10}
                   value={currentParams.carrierFreq}
+                  onContextMenu={(e) => onControlContextMenu(e, 'carrierFreq', activeChannel)}
                   onChange={(e) => dispatchCarrierFreq(activeChannel, Number(e.target.value))}
                   className="w-full h-2 bg-[#1e293b] rounded appearance-none cursor-pointer accent-current"
                 />
@@ -435,6 +497,7 @@ export default function App() {
                   type="range" min={1} max={150} step={1}
                   value={currentParams.modFreq}
                   disabled={currentParams.syncToMaster}
+                  onContextMenu={(e) => onControlContextMenu(e, 'modFreq', activeChannel)}
                   onChange={(e) => dispatchModFreq(activeChannel, Number(e.target.value))}
                   className={`w-full h-2 rounded appearance-none cursor-pointer accent-current ${currentParams.syncToMaster ? 'bg-[#0b1016] opacity-30' : 'bg-[#1e293b]'}`}
                 />
@@ -443,6 +506,7 @@ export default function App() {
                   <input
                     type="range" min={0} max={1} step={0.01}
                     value={currentParams.modDepth}
+                    onContextMenu={(e) => onControlContextMenu(e, 'modDepth', activeChannel)}
                     onChange={(e) => dispatchModDepth(activeChannel, Number(e.target.value))}
                     className="w-full h-1.5 bg-[#1e293b] rounded appearance-none cursor-pointer accent-current"
                   />
@@ -452,6 +516,7 @@ export default function App() {
                   <input
                     type="range" min={0} max={1} step={0.01}
                     value={currentParams.masterVolume}
+                    onContextMenu={(e) => onControlContextMenu(e, 'masterVolume', activeChannel)}
                     onChange={(e) => dispatchMasterVolume(activeChannel, Number(e.target.value))}
                     className="w-full h-1.5 bg-[#1e293b] rounded appearance-none cursor-pointer accent-current"
                   />
@@ -595,6 +660,51 @@ export default function App() {
           {isRunning ? 'TRANSMITTING STEREO' : 'IDLE'}
         </div>
       </footer>
+
+      {/* MIDI Learn Context Menu */}
+      {contextMenu && (
+        <div 
+          className="fixed z-[100] bg-[#0b1016] border border-cyan-800 rounded-lg shadow-[0_4px_20px_rgba(0,0,0,0.5)] overflow-hidden min-w-[140px]"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => handleMidiLearn(contextMenu.param, contextMenu.channel)}
+            className="w-full text-left px-4 py-2 text-[10px] font-bold text-cyan-400 hover:bg-cyan-900/30 flex items-center gap-2 border-b border-[#1a2634]"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            LEARN MIDI CC
+          </button>
+          <button
+            onClick={() => setContextMenu(null)}
+            className="w-full text-left px-4 py-2 text-[10px] font-bold text-slate-500 hover:bg-[#15202c]"
+          >
+            CANCEL
+          </button>
+        </div>
+      )}
+
+      {/* Learning Overlay */}
+      {isLearning && (
+        <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="bg-[#0b1016] border-2 border-amber-500 p-8 rounded-2xl flex flex-col items-center gap-4 animate-pulse">
+            <Activity className="w-12 h-12 text-amber-500" />
+            <div className="text-center">
+              <h3 className="text-xl font-black text-amber-500 uppercase tracking-tighter">MIDI Learning Active</h3>
+              <p className="text-xs text-slate-400 mt-2">Move a physical slider or knob on your controller now...</p>
+            </div>
+            <button 
+              className="mt-4 px-6 py-2 bg-slate-900 border border-slate-700 text-slate-400 text-[10px] font-bold rounded-full pointer-events-auto hover:bg-slate-800"
+              onClick={() => {
+                midiService.stopLearning();
+                setIsLearning(false);
+              }}
+            >
+              CANCEL LEARN
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

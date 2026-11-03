@@ -250,7 +250,7 @@ export const Player: React.FC<PlayerProps> = ({ engine }) => {
                     <motion.div 
                       className="absolute top-0 bottom-0 w-0.5 bg-white z-20 shadow-[0_0_8px_white]"
                       animate={{ left: `${progress}%` }}
-                      transition={{ type: 'linear', duration: 0.1 }}
+                      transition={{ ease: 'linear', duration: 0.1 }}
                     />
                     
                     {/* Channels Preview */}
