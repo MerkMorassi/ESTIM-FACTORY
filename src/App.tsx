@@ -131,6 +131,7 @@ export default function App() {
   const [midiLastCC, setMidiLastCC] = useState<string>('');
   const [isLearning, setIsLearning] = useState<boolean>(false);
   const [isMpd218Connected, setIsMpd218Connected] = useState<boolean>(false);
+  const [muted, setMuted] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; param: MidiMappingType; channel: 'left' | 'right' | 'both' } | null>(null);
 
   const engineRef = useRef<SignalEngine | null>(null);
@@ -339,7 +340,16 @@ export default function App() {
     engineRef.current?.setLoopRange(channel, start, end);
   };
 
+  const toggleMute = (channel: 'left' | 'right') => {
+    const nextMuted = !muted[channel];
+    setMuted(prev => ({ ...prev, [channel]: nextMuted }));
+    engineRef.current?.setMute(channel, nextMuted);
+  };
+
   const handleSelectPreset = (preset: TelemetryPreset) => {
+    if (engineRef.current) {
+      engineRef.current.stop();
+    }
     setActivePresetId(preset.id);
     const channel = activeChannel;
     const updated = {
@@ -368,10 +378,18 @@ export default function App() {
       engineRef.current.setMode(channel, preset.mode);
       engineRef.current.setBurstDuration(channel, preset.burstDurationMs);
       engineRef.current.setDutyCycle(channel, preset.dutyCycle);
+      
+      // If we were running, restart with new parameters
+      if (isRunning) {
+        engineRef.current.start();
+      }
     }
   };
 
   const handleSelectDualPreset = (preset: DualChannelPreset) => {
+    if (engineRef.current) {
+      engineRef.current.stop();
+    }
     setActivePresetId(preset.id);
     setAppState(prev => ({
       ...prev,
@@ -393,6 +411,10 @@ export default function App() {
         engineRef.current!.setBurstDuration(ch, p.burstDurationMs);
         engineRef.current!.setDutyCycle(ch, p.dutyCycle);
       });
+      
+      if (isRunning) {
+        engineRef.current.start();
+      }
     }
   };
 
@@ -460,20 +482,41 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-4">
-          {/* Channel Selector */}
-          <div className="flex p-1 bg-[#101720] border border-[#1a2634] rounded-lg">
-            <button
-              onClick={() => setActiveChannel('left')}
-              className={`px-3 py-1 text-[10px] font-bold rounded transition-all ${activeChannel === 'left' ? 'bg-cyan-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-            >
-              CHANNEL 1 (L)
-            </button>
-            <button
-              onClick={() => setActiveChannel('right')}
-              className={`px-3 py-1 text-[10px] font-bold rounded transition-all ${activeChannel === 'right' ? 'bg-emerald-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-            >
-              CHANNEL 2 (R)
-            </button>
+          {/* Channel Selector & Mute */}
+          <div className="flex items-center gap-2 p-1 bg-[#101720] border border-[#1a2634] rounded-lg">
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setActiveChannel('left')}
+                className={`px-3 py-1 text-[10px] font-bold rounded transition-all ${activeChannel === 'left' ? 'bg-cyan-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                CHANNEL 1 (L)
+              </button>
+              <button
+                onClick={() => toggleMute('left')}
+                className={`p-1.5 rounded transition-all ${muted.left ? 'bg-rose-950/40 text-rose-500' : 'text-slate-600 hover:text-slate-400'}`}
+                title={muted.left ? 'Unmute Channel 1' : 'Mute Channel 1'}
+              >
+                {muted.left ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            
+            <div className="w-px h-4 bg-[#1a2634] mx-1" />
+
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setActiveChannel('right')}
+                className={`px-3 py-1 text-[10px] font-bold rounded transition-all ${activeChannel === 'right' ? 'bg-emerald-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                CHANNEL 2 (R)
+              </button>
+              <button
+                onClick={() => toggleMute('right')}
+                className={`p-1.5 rounded transition-all ${muted.right ? 'bg-rose-950/40 text-rose-500' : 'text-slate-600 hover:text-slate-400'}`}
+                title={muted.right ? 'Unmute Channel 2' : 'Mute Channel 2'}
+              >
+                {muted.right ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+              </button>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">

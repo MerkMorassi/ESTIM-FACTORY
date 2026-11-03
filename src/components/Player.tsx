@@ -85,6 +85,9 @@ export const Player: React.FC<PlayerProps> = ({ engine }) => {
   };
 
   const resetProtocol = () => {
+    if (engine) {
+      engine.stop();
+    }
     setIsPlaying(false);
     setStartTime(null);
     setProgress(0);

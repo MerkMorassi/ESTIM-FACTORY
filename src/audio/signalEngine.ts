@@ -23,6 +23,7 @@ export class SignalChain {
   private sequencerGain: GainNode | null = null;
   private vcaGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
+  private muteGain: GainNode | null = null;
   
   private modOsc: OscillatorNode | null = null;
   private modGain: GainNode | null = null;
@@ -36,6 +37,7 @@ export class SignalChain {
   private seqTimerId: number | null = null;
   private currentStepIndex: number = 0;
   private isRunning: boolean = false;
+  private isMuted: boolean = false;
   private onStepCallback: StepCallback | null = null;
 
   constructor(ctx: AudioContext, initialParams: SignalParameters, steps: SequencerStep[]) {
@@ -55,6 +57,8 @@ export class SignalChain {
     this.envAnalyser.fftSize = 1024;
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.setValueAtTime(0.0001, now);
+    this.muteGain = this.ctx.createGain();
+    this.muteGain.gain.setValueAtTime(1.0, now);
     this.vcaGain = this.ctx.createGain();
     this.vcaGain.gain.setValueAtTime(0.0, now);
     
@@ -109,7 +113,8 @@ export class SignalChain {
     this.sequencerGain.connect(this.vcaGain);
     
     this.vcaGain.connect(this.masterGain);
-    this.masterGain.connect(this.analyser);
+    this.masterGain.connect(this.muteGain);
+    this.muteGain.connect(this.analyser);
     this.analyser.connect(this.output);
     
     this.carrierOscA.start(now);
@@ -132,11 +137,26 @@ export class SignalChain {
     return { progress: Math.min(1.0, elapsed / POP_FREE_RAMP_SEC), type: this.transitionType };
   }
 
+  public cancelAutomation(): void {
+    if (!this.ctx || !this.masterGain) return;
+    const now = this.ctx.currentTime;
+    this.masterGain.gain.cancelScheduledValues(now);
+    this.muteGain!.gain.cancelScheduledValues(now);
+    this.carrierOscA!.frequency.cancelScheduledValues(now);
+    this.carrierOscB!.frequency.cancelScheduledValues(now);
+    this.modOsc!.frequency.cancelScheduledValues(now);
+    this.modGain!.gain.cancelScheduledValues(now);
+    this.modOffset!.offset.cancelScheduledValues(now);
+    this.sequencerGain!.gain.cancelScheduledValues(now);
+    this.phaseDelay!.delayTime.cancelScheduledValues(now);
+  }
+
   public start(): void {
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
-    this.masterGain!.gain.cancelScheduledValues(now);
+    this.cancelAutomation();
     this.masterGain!.gain.linearRampToValueAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN, now + POP_FREE_RAMP_SEC);
+    this.muteGain!.gain.linearRampToValueAtTime(this.isMuted ? 0.0001 : 1.0, now + POP_FREE_RAMP_SEC);
     this.isRunning = true;
     if (this.params.mode === 'sequenced' || this.params.mode === 'burst' || this.params.mode === 'sweep') this.startClock();
   }
@@ -144,21 +164,32 @@ export class SignalChain {
   public stop(): void {
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
-    this.masterGain!.gain.cancelScheduledValues(now);
+    this.cancelAutomation();
     this.masterGain!.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
     this.stopClock();
     this.isRunning = false;
+  }
+
+  public setMute(muted: boolean): void {
+    this.isMuted = muted;
+    const now = this.ctx.currentTime;
+    this.trackTransition('amplitude');
+    this.muteGain!.gain.cancelScheduledValues(now);
+    this.muteGain!.gain.linearRampToValueAtTime(muted ? 0.0001 : 1.0, now + POP_FREE_RAMP_SEC);
   }
 
   public setCarrierFrequency(freq: number): void {
     this.params.carrierFreq = freq;
     const now = this.ctx.currentTime;
     this.trackTransition('frequency');
+    this.carrierOscA!.frequency.cancelScheduledValues(now);
     this.carrierOscA!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
+    this.carrierOscB!.frequency.cancelScheduledValues(now);
     this.carrierOscB!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
     
     // Maintain phase shift delay
     const delay = (this.params.carrierPhase / 360) * (1 / Math.max(1, freq));
+    this.phaseDelay!.delayTime.cancelScheduledValues(now);
     this.phaseDelay!.delayTime.linearRampToValueAtTime(delay, now + POP_FREE_RAMP_SEC);
   }
 
@@ -168,13 +199,16 @@ export class SignalChain {
     this.params.carrierMorph = morph;
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
+    this.carrierGainA!.gain.cancelScheduledValues(now);
     this.carrierGainA!.gain.linearRampToValueAtTime(1.0 - morph, now + POP_FREE_RAMP_SEC);
+    this.carrierGainB!.gain.cancelScheduledValues(now);
     this.carrierGainB!.gain.linearRampToValueAtTime(morph, now + POP_FREE_RAMP_SEC);
   }
   public setCarrierPhase(phase: number): void {
     this.params.carrierPhase = phase;
     const now = this.ctx.currentTime;
-    this.trackTransition('amplitude'); // Using amplitude tracking for phase visual
+    this.trackTransition('amplitude'); 
+    this.phaseDelay!.delayTime.cancelScheduledValues(now);
     const delay = (phase / 360) * (1 / Math.max(1, this.params.carrierFreq));
     this.phaseDelay!.delayTime.linearRampToValueAtTime(delay, now + POP_FREE_RAMP_SEC);
   }
@@ -182,6 +216,7 @@ export class SignalChain {
     this.params.modFreq = freq;
     const now = this.ctx.currentTime;
     this.trackTransition('frequency');
+    this.modOsc!.frequency.cancelScheduledValues(now);
     this.modOsc!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
   }
   public setModWaveform(wave: WaveformType): void { this.params.modWaveform = wave; this.modOsc!.type = wave; }
@@ -189,7 +224,9 @@ export class SignalChain {
     this.params.modDepth = depth;
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
+    this.modGain!.gain.cancelScheduledValues(now);
     this.modGain!.gain.linearRampToValueAtTime(depth * 0.5, now + POP_FREE_RAMP_SEC);
+    this.modOffset!.offset.cancelScheduledValues(now);
     this.modOffset!.offset.linearRampToValueAtTime(1.0 - (depth * 0.5), now + POP_FREE_RAMP_SEC);
   }
   public setMasterVolume(vol: number): void {
@@ -197,6 +234,7 @@ export class SignalChain {
     if (!this.isRunning) return;
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
+    this.masterGain!.gain.cancelScheduledValues(now);
     this.masterGain!.gain.linearRampToValueAtTime(vol * SAFETY_CEILING_GAIN, now + POP_FREE_RAMP_SEC);
   }
   public setMode(mode: ModulationMode): void { this.params.mode = mode; if (this.isRunning) { if (mode === 'sequenced' || mode === 'burst' || mode === 'sweep') this.startClock(); else this.stopClock(); } }
@@ -258,6 +296,11 @@ export class SignalChain {
     const bpm = masterBpm || seg.bpm || 120;
     
     if (seg.type === 'beat' && seg.steps) {
+      // CLEAR AUTOMATION FOR THE ENTIRE SEGMENT DURATION
+      this.masterGain!.gain.cancelScheduledValues(startTime);
+      this.carrierOscA!.frequency.cancelScheduledValues(startTime);
+      this.carrierOscB!.frequency.cancelScheduledValues(startTime);
+
       const stepDuration = 60 / bpm / 4; // 16th note
       const numSteps = seg.steps.length;
       const totalStepsDuration = stepDuration * numSteps;
@@ -349,6 +392,7 @@ export class SignalEngine {
 
   public async start(): Promise<void> { if (!this.ctx) await this.initAudio(); this.chains?.left.start(); this.chains?.right.start(); this.isRunning = true; }
   public stop(): void { this.chains?.left.stop(); this.chains?.right.stop(); this.isRunning = false; }
+  public setMute(ch: 'left' | 'right', muted: boolean): void { this.chains?.[ch].setMute(muted); }
   public setCarrierFrequency(ch: 'left' | 'right', f: number): void { this.params[ch].carrierFreq = f; this.chains?.[ch].setCarrierFrequency(f); }
   public setCarrierWaveform(ch: 'left' | 'right', w: WaveformType): void { this.params[ch].carrierWaveform = w; this.chains?.[ch].setCarrierWaveform(w); }
   public setCarrierWaveformB(ch: 'left' | 'right', w: WaveformType): void { this.params[ch].carrierWaveformB = w; this.chains?.[ch].setCarrierWaveformB(w); }
