@@ -32,10 +32,10 @@ export class MidiService {
   private learningState: MidiLearnState | null = null;
   
   private mappings: MidiMapping[] = [
-    { cc: 1, param: 'masterVolume', channel: 'both' },
-    { cc: 74, param: 'carrierFreq', channel: 'both' },
-    { cc: 71, param: 'modFreq', channel: 'both' },
-    { cc: 10, param: 'modDepth', channel: 'both' },
+    { cc: 3, param: 'masterVolume', channel: 'both' }, // MPD218 Knob 1
+    { cc: 9, param: 'carrierFreq', channel: 'both' },   // MPD218 Knob 2
+    { cc: 14, param: 'modFreq', channel: 'both' },     // MPD218 Knob 3
+    { cc: 15, param: 'modDepth', channel: 'both' },    // MPD218 Knob 4
   ];
 
   public async requestAccess(): Promise<boolean> {

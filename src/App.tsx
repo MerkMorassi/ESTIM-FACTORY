@@ -29,6 +29,7 @@ import { HardwareDashboard } from './components/HardwareDashboard';
 import { AyurvedicHarmonics } from './components/AyurvedicHarmonics';
 import { Composer } from './components/Composer';
 import { Player } from './components/Player';
+import { MidiMappingOverview } from './components/MidiMappingOverview';
 import {
   Power,
   Volume2,
@@ -103,11 +104,12 @@ export default function App() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [currentStep, setCurrentStep] = useState<{ left: number; right: number }>({ left: 0, right: 0 });
   const [isExporting, setIsExporting] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'profiler' | 'sequencer' | 'spectrum' | 'standalone_module' | 'ayurvedic' | 'composer' | 'player'>('player');
+  const [activeTab, setActiveTab] = useState<'profiler' | 'sequencer' | 'spectrum' | 'standalone_module' | 'ayurvedic' | 'composer' | 'player' | 'midi'>('player');
   const [isTestingAudio, setIsTestingAudio] = useState<boolean>(false);
   const [midiStatus, setMidiStatus] = useState<'idle' | 'active' | 'denied'>('idle');
   const [midiLastCC, setMidiLastCC] = useState<string>('');
   const [isLearning, setIsLearning] = useState<boolean>(false);
+  const [isMpd218Connected, setIsMpd218Connected] = useState<boolean>(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; param: MidiMappingType; channel: 'left' | 'right' | 'both' } | null>(null);
 
   const engineRef = useRef<SignalEngine | null>(null);
@@ -123,6 +125,9 @@ export default function App() {
       setMidiStatus(granted ? 'active' : 'denied');
       
       if (granted) {
+        const inputs = midiService.getInputs();
+        setIsMpd218Connected(inputs.some(input => input.name?.includes('MPD218')));
+
         midiService.setCallback((param, value, channel) => {
           setMidiLastCC(`${param.toUpperCase()}`);
           
@@ -378,8 +383,13 @@ export default function App() {
             <div className={`flex items-center gap-2 px-3 py-1.5 rounded border text-[10px] font-bold ${midiStatus === 'active' ? 'bg-cyan-950/30 border-cyan-800 text-cyan-400' : 'bg-slate-900 border-slate-800 text-slate-600'}`}>
               <Activity className={`w-3.5 h-3.5 ${midiStatus === 'active' ? (isLearning ? 'animate-bounce text-amber-400' : 'animate-pulse') : ''}`} />
               <div className="flex flex-col leading-none">
-                <span className={isLearning ? 'text-amber-400' : ''}>{isLearning ? 'LEARNING...' : `MIDI ${midiStatus.toUpperCase()}`}</span>
-                {midiLastCC && <span className="text-[8px] text-cyan-600 truncate max-w-[60px]">{midiLastCC}</span>}
+                <div className="flex items-center gap-1.5">
+                  <span className={isLearning ? 'text-amber-400' : ''}>{isLearning ? 'LEARNING...' : `MIDI ${midiStatus.toUpperCase()}`}</span>
+                  {isMpd218Connected && (
+                    <span className="bg-cyan-500/20 text-cyan-500 px-1 rounded-[2px] text-[7px] border border-cyan-500/30">AKAI MPD218</span>
+                  )}
+                </div>
+                {midiLastCC && <span className="text-[8px] text-cyan-600 truncate max-w-[80px]">{midiLastCC}</span>}
               </div>
             </div>
 
@@ -616,14 +626,14 @@ export default function App() {
             />
 
             <div className="flex items-center gap-2 border-b border-[#1a2634] pb-1 overflow-x-auto">
-              {(['player', 'composer', 'profiler', 'sequencer', 'spectrum', 'ayurvedic'] as const).map(t => (
+              {(['player', 'composer', 'midi', 'profiler', 'sequencer', 'spectrum', 'ayurvedic'] as const).map(t => (
                 <button key={t} onClick={() => setActiveTab(t)} className={`py-1.5 px-3 text-[10px] font-black rounded uppercase whitespace-nowrap ${activeTab === t ? 'bg-[#162433] text-cyan-300 border border-cyan-800' : 'text-slate-400 hover:text-slate-200 transition-colors'}`}>
                   {t === 'player' ? (
                     <span className="flex items-center gap-1.5">
                       <PlayCircle className="w-3.5 h-3.5" />
                       Player
                     </span>
-                  ) : t === 'composer' ? 'Composer' : t}
+                  ) : t === 'composer' ? 'Composer' : t === 'midi' ? 'MIDI MAP' : t}
                 </button>
               ))}
             </div>
@@ -645,6 +655,7 @@ export default function App() {
             {activeTab === 'ayurvedic' && <AyurvedicHarmonics />}
             {activeTab === 'composer' && <Composer onPlayProtocol={(p) => engineRef.current?.scheduleProtocol(p)} onStopProtocol={() => engineRef.current?.stop()} />}
             {activeTab === 'player' && <Player engine={engineRef.current} />}
+            {activeTab === 'midi' && <MidiMappingOverview onRefresh={() => {}} />}
           </div>
         </div>
       </main>
