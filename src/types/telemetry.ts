@@ -13,6 +13,9 @@ export interface SignalParameters {
   // Carrier layer (500 Hz - 4000 Hz)
   carrierFreq: number;
   carrierWaveform: WaveformType;
+  carrierWaveformB: WaveformType;
+  carrierMorph: number; // 0.0 (Waveform A) to 1.0 (Waveform B)
+  carrierPhase: number; // 0 to 360 degrees
   
   // Modulation layer (1 Hz - 150 Hz)
   modFreq: number;

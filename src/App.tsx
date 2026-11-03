@@ -30,6 +30,7 @@ import { AyurvedicHarmonics } from './components/AyurvedicHarmonics';
 import { Composer } from './components/Composer';
 import { Player } from './components/Player';
 import { MidiMappingOverview } from './components/MidiMappingOverview';
+import { AiCoPilot } from './components/AiCoPilot';
 import {
   Power,
   Volume2,
@@ -49,12 +50,16 @@ import {
   PlayCircle,
   SaveAll,
   Activity,
+  BrainCircuit,
 } from 'lucide-react';
 import { midiService, MidiMappingType } from './audio/midiService';
 
 const DEFAULT_PARAMS: SignalParameters = {
   carrierFreq: 100,
   carrierWaveform: 'sine',
+  carrierWaveformB: 'triangle',
+  carrierMorph: 0.0,
+  carrierPhase: 0,
   modFreq: 10,
   modWaveform: 'sine',
   modDepth: 0.5,
@@ -104,7 +109,7 @@ export default function App() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [currentStep, setCurrentStep] = useState<{ left: number; right: number }>({ left: 0, right: 0 });
   const [isExporting, setIsExporting] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'profiler' | 'sequencer' | 'spectrum' | 'standalone_module' | 'ayurvedic' | 'composer' | 'player' | 'midi'>('player');
+  const [activeTab, setActiveTab] = useState<'profiler' | 'sequencer' | 'spectrum' | 'standalone_module' | 'ayurvedic' | 'composer' | 'player' | 'midi' | 'ai'>('player');
   const [isTestingAudio, setIsTestingAudio] = useState<boolean>(false);
   const [midiStatus, setMidiStatus] = useState<'idle' | 'active' | 'denied'>('idle');
   const [midiLastCC, setMidiLastCC] = useState<string>('');
@@ -141,6 +146,26 @@ export default function App() {
             dispatchModFreq(channel, freq);
           } else if (param === 'modDepth') {
             dispatchModDepth(channel, value);
+          } else if (param === 'carrierMorph') {
+            dispatchCarrierMorph(channel, value);
+          } else if (param === 'carrierPhase') {
+            const phase = Math.round(value * 360);
+            dispatchCarrierPhase(channel, phase);
+          } else if (param === 'masterBpm') {
+            const bpm = Math.round(40 + (value * 200)); // 40-240
+            dispatchMasterBpm(bpm);
+          } else if (param === 'power') {
+            togglePower();
+          } else if (param === 'mode') {
+            // Cycle modes: continuous -> burst -> sequenced -> sweep
+            const modes: ModulationMode[] = ['continuous', 'burst', 'sequenced', 'sweep'];
+            const currentMode = params[activeChannel].mode;
+            const nextMode = modes[(modes.indexOf(currentMode) + 1) % modes.length];
+            dispatchMode(activeChannel, nextMode);
+          } else if (param === 'sync') {
+            dispatchSyncToMaster(activeChannel, !params[activeChannel].syncToMaster);
+          } else if (param === 'channelFocus') {
+            setActiveChannel(prev => prev === 'left' ? 'right' : 'left');
           }
         });
       }
@@ -148,8 +173,9 @@ export default function App() {
     
     initMidi();
 
-    midiService.setLearnCallback((param, cc) => {
-      setMidiLastCC(`LEARNED CC ${cc}`);
+    midiService.setLearnCallback((param, id) => {
+      const label = id.cc !== undefined ? `CC ${id.cc}` : `NOTE ${id.note}`;
+      setMidiLastCC(`LEARNED ${label}`);
       setIsLearning(false);
     });
 
@@ -201,6 +227,21 @@ export default function App() {
   const dispatchCarrierWave = (channel: 'left' | 'right', wave: WaveformType) => {
     handleParamChange(channel, 'carrierWaveform', wave);
     engineRef.current?.setCarrierWaveform(channel, wave);
+  };
+
+  const dispatchCarrierWaveB = (channel: 'left' | 'right', wave: WaveformType) => {
+    handleParamChange(channel, 'carrierWaveformB', wave);
+    engineRef.current?.setCarrierWaveformB(channel, wave);
+  };
+
+  const dispatchCarrierMorph = (channel: 'left' | 'right', morph: number) => {
+    handleParamChange(channel, 'carrierMorph', morph);
+    engineRef.current?.setCarrierMorph(channel, morph);
+  };
+
+  const dispatchCarrierPhase = (channel: 'left' | 'right', phase: number) => {
+    handleParamChange(channel, 'carrierPhase', phase);
+    engineRef.current?.setCarrierPhase(channel, phase);
   };
 
   const dispatchModFreq = (channel: 'left' | 'right', freq: number) => {
@@ -333,6 +374,25 @@ export default function App() {
     }, 600);
   };
 
+  const handleAiCommand = (data: any) => {
+    const ch = data.ch === 'both' ? ['left', 'right'] : [data.ch || activeChannel];
+    
+    (ch as ('left' | 'right')[]).forEach(c => {
+      if (data.carrierFreq !== undefined) dispatchCarrierFreq(c, data.carrierFreq);
+      if (data.modFreq !== undefined) dispatchModFreq(c, data.modFreq);
+      if (data.modDepth !== undefined) dispatchModDepth(c, data.modDepth);
+      if (data.masterVolume !== undefined) dispatchMasterVolume(c, data.masterVolume);
+      if (data.mode !== undefined) dispatchMode(c, data.mode);
+      if (data.carrierMorph !== undefined) dispatchCarrierMorph(c, data.carrierMorph);
+      if (data.carrierPhase !== undefined) dispatchCarrierPhase(c, data.carrierPhase);
+    });
+
+    if (data.power !== undefined) {
+      if (data.power && !isRunning) togglePower();
+      if (!data.power && isRunning) togglePower();
+    }
+  };
+
   const currentParams = params[activeChannel];
 
   return (
@@ -453,11 +513,53 @@ export default function App() {
                   className="w-full h-2 bg-[#1e293b] rounded appearance-none cursor-pointer accent-current"
                 />
                 <div className="grid grid-cols-2 gap-2">
-                  {(['sine', 'triangle'] as const).map(w => (
-                    <button key={w} onClick={() => dispatchCarrierWave(activeChannel, w)} className={`py-1.5 rounded font-bold uppercase transition-all ${currentParams.carrierWaveform === w ? 'bg-slate-700 text-white' : 'bg-[#121c27] text-slate-500'}`}>
-                      {w}
-                    </button>
-                  ))}
+                  <div className="space-y-1.5">
+                    <div className="text-[9px] text-slate-500 font-bold uppercase">Base (A)</div>
+                    <div className="grid grid-cols-2 gap-1">
+                      {(['sine', 'triangle'] as const).map(w => (
+                        <button key={w} onClick={() => dispatchCarrierWave(activeChannel, w)} className={`py-1 text-[9px] rounded font-bold uppercase transition-all ${currentParams.carrierWaveform === w ? 'bg-slate-700 text-white border border-slate-600' : 'bg-[#121c27] text-slate-500 border border-transparent'}`}>
+                          {w}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="text-[9px] text-slate-500 font-bold uppercase">Morph (B)</div>
+                    <div className="grid grid-cols-2 gap-1">
+                      {(['sine', 'triangle'] as const).map(w => (
+                        <button key={w} onClick={() => dispatchCarrierWaveB(activeChannel, w)} className={`py-1 text-[9px] rounded font-bold uppercase transition-all ${currentParams.carrierWaveformB === w ? 'bg-slate-700 text-white border border-slate-600' : 'bg-[#121c27] text-slate-500 border border-transparent'}`}>
+                          {w}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5 pt-1">
+                  <div className="flex justify-between text-[10px] text-slate-500 uppercase font-black">
+                    Waveform Morph: {Math.round(currentParams.carrierMorph * 100)}%
+                    <span className="text-cyan-600">{currentParams.carrierWaveform} → {currentParams.carrierWaveformB}</span>
+                  </div>
+                  <input
+                    type="range" min={0} max={1} step={0.01}
+                    value={currentParams.carrierMorph}
+                    onContextMenu={(e) => onControlContextMenu(e, 'carrierMorph', activeChannel)}
+                    onChange={(e) => dispatchCarrierMorph(activeChannel, Number(e.target.value))}
+                    className="w-full h-1.5 bg-[#1e293b] rounded appearance-none cursor-pointer accent-cyan-500"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5 pt-1">
+                  <div className="flex justify-between text-[10px] text-slate-500 uppercase font-black">
+                    Phase Shift: {currentParams.carrierPhase}°
+                  </div>
+                  <input
+                    type="range" min={0} max={360} step={1}
+                    value={currentParams.carrierPhase}
+                    onContextMenu={(e) => onControlContextMenu(e, 'carrierPhase', activeChannel)}
+                    onChange={(e) => dispatchCarrierPhase(activeChannel, Number(e.target.value))}
+                    className="w-full h-1.5 bg-[#1e293b] rounded appearance-none cursor-pointer accent-emerald-500"
+                  />
                 </div>
               </div>
 
@@ -626,14 +728,19 @@ export default function App() {
             />
 
             <div className="flex items-center gap-2 border-b border-[#1a2634] pb-1 overflow-x-auto">
-              {(['player', 'composer', 'midi', 'profiler', 'sequencer', 'spectrum', 'ayurvedic'] as const).map(t => (
+              {(['player', 'composer', 'ai', 'midi', 'profiler', 'sequencer', 'spectrum', 'ayurvedic'] as const).map(t => (
                 <button key={t} onClick={() => setActiveTab(t)} className={`py-1.5 px-3 text-[10px] font-black rounded uppercase whitespace-nowrap ${activeTab === t ? 'bg-[#162433] text-cyan-300 border border-cyan-800' : 'text-slate-400 hover:text-slate-200 transition-colors'}`}>
                   {t === 'player' ? (
                     <span className="flex items-center gap-1.5">
                       <PlayCircle className="w-3.5 h-3.5" />
                       Player
                     </span>
-                  ) : t === 'composer' ? 'Composer' : t === 'midi' ? 'MIDI MAP' : t}
+                  ) : t === 'composer' ? 'Composer' : t === 'midi' ? 'MIDI MAP' : t === 'ai' ? (
+                    <span className="flex items-center gap-1.5">
+                      <BrainCircuit className="w-3.5 h-3.5" />
+                      AI Co-Pilot
+                    </span>
+                  ) : t}
                 </button>
               ))}
             </div>
@@ -656,6 +763,16 @@ export default function App() {
             {activeTab === 'composer' && <Composer onPlayProtocol={(p) => engineRef.current?.scheduleProtocol(p)} onStopProtocol={() => engineRef.current?.stop()} />}
             {activeTab === 'player' && <Player engine={engineRef.current} />}
             {activeTab === 'midi' && <MidiMappingOverview onRefresh={() => {}} />}
+            {activeTab === 'ai' && (
+              <AiCoPilot 
+                currentState={{ params, isRunning, activeChannel }}
+                onExecuteCommand={handleAiCommand}
+                onLoadProtocol={(p) => {
+                  engineRef.current?.scheduleProtocol(p);
+                  if (!isRunning) togglePower();
+                }}
+              />
+            )}
           </div>
         </div>
       </main>

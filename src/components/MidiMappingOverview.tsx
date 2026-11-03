@@ -23,6 +23,13 @@ export const MidiMappingOverview: React.FC<MidiMappingOverviewProps> = ({ onRefr
       case 'carrierFreq': return 'Carrier Frequency';
       case 'modFreq': return 'Modulation Frequency';
       case 'modDepth': return 'Modulation Depth';
+      case 'carrierMorph': return 'Carrier Morph';
+      case 'carrierPhase': return 'Carrier Phase Shift';
+      case 'masterBpm': return 'Global Master BPM';
+      case 'power': return 'Master ARM/Power';
+      case 'mode': return 'Modulation Mode Toggle';
+      case 'sync': return 'BPM Sync Toggle';
+      case 'channelFocus': return 'Channel Focus Toggle';
       default: return param;
     }
   };
@@ -57,9 +64,9 @@ export const MidiMappingOverview: React.FC<MidiMappingOverviewProps> = ({ onRefr
               >
                 <div className="flex items-center gap-4">
                   {/* Physical Representation */}
-                  <div className="flex flex-col items-center justify-center bg-[#15202c] border border-cyan-900/50 rounded p-2 min-w-[50px]">
-                    <span className="text-[8px] text-cyan-600 font-black uppercase">CC</span>
-                    <span className="text-sm font-black text-cyan-400 tabular-nums">{mapping.cc}</span>
+                  <div className="flex flex-col items-center justify-center bg-[#15202c] border border-cyan-900/50 rounded p-2 min-w-[60px]">
+                    <span className="text-[8px] text-cyan-600 font-black uppercase">{mapping.cc !== undefined ? 'CC' : 'NOTE'}</span>
+                    <span className="text-sm font-black text-cyan-400 tabular-nums">{mapping.cc ?? mapping.note}</span>
                   </div>
 
                   <div className="flex items-center gap-2 text-slate-500">

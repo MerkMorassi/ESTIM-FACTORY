@@ -15,8 +15,12 @@ export class SignalChain {
   public input: GainNode;
   public output: GainNode;
   
-  private carrierOsc: OscillatorNode | null = null;
-  private carrierGain: GainNode | null = null;
+  private carrierOscA: OscillatorNode | null = null;
+  private carrierGainA: GainNode | null = null;
+  private carrierOscB: OscillatorNode | null = null;
+  private carrierGainB: GainNode | null = null;
+  private phaseDelay: DelayNode | null = null;
+  private sequencerGain: GainNode | null = null;
   private vcaGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
   
@@ -53,11 +57,32 @@ export class SignalChain {
     this.masterGain.gain.setValueAtTime(0.0001, now);
     this.vcaGain = this.ctx.createGain();
     this.vcaGain.gain.setValueAtTime(0.0, now);
-    this.carrierOsc = this.ctx.createOscillator();
-    this.carrierOsc.type = this.params.carrierWaveform;
-    this.carrierOsc.frequency.setValueAtTime(this.params.carrierFreq, now);
-    this.carrierGain = this.ctx.createGain();
-    this.carrierGain.gain.setValueAtTime(1.0, now);
+    
+    // Phase Delay Node
+    this.phaseDelay = this.ctx.createDelay(1.0); // 1s max delay
+    const initialDelay = (this.params.carrierPhase / 360) * (1 / Math.max(1, this.params.carrierFreq));
+    this.phaseDelay.delayTime.setValueAtTime(initialDelay, now);
+    
+    // Sequencer gate (default to open, pulsed in sequenced mode)
+    this.sequencerGain = this.ctx.createGain();
+    this.sequencerGain.gain.setValueAtTime(1.0, now);
+    
+    // Carrier A
+    this.carrierOscA = this.ctx.createOscillator();
+    this.carrierOscA.type = this.params.carrierWaveform;
+    this.carrierOscA.frequency.setValueAtTime(this.params.carrierFreq, now);
+    this.carrierGainA = this.ctx.createGain();
+    const gainA = 1.0 - this.params.carrierMorph;
+    this.carrierGainA.gain.setValueAtTime(gainA, now);
+    
+    // Carrier B
+    this.carrierOscB = this.ctx.createOscillator();
+    this.carrierOscB.type = this.params.carrierWaveformB;
+    this.carrierOscB.frequency.setValueAtTime(this.params.carrierFreq, now);
+    this.carrierGainB = this.ctx.createGain();
+    const gainB = this.params.carrierMorph;
+    this.carrierGainB.gain.setValueAtTime(gainB, now);
+
     this.modOsc = this.ctx.createOscillator();
     this.modOsc.type = this.params.modWaveform;
     this.modOsc.frequency.setValueAtTime(this.params.modFreq, now);
@@ -65,20 +90,30 @@ export class SignalChain {
     this.modGain.gain.setValueAtTime(this.params.modDepth * 0.5, now);
     this.modOffset = this.ctx.createConstantSource();
     this.modOffset.offset.setValueAtTime(1.0 - (this.params.modDepth * 0.5), now);
+    
     this.modOsc.connect(this.modGain);
     this.modGain.connect(this.vcaGain.gain);
     this.modOffset.connect(this.vcaGain.gain);
+    
     const envTap = this.ctx.createGain();
     envTap.gain.setValueAtTime(0.5, now);
     this.modGain.connect(envTap);
     this.modOffset.connect(envTap);
     envTap.connect(this.envAnalyser);
-    this.carrierOsc.connect(this.carrierGain);
-    this.carrierGain.connect(this.vcaGain);
+    
+    this.carrierOscA.connect(this.carrierGainA);
+    this.carrierOscB.connect(this.carrierGainB);
+    this.carrierGainA.connect(this.phaseDelay);
+    this.carrierGainB.connect(this.phaseDelay);
+    this.phaseDelay.connect(this.sequencerGain);
+    this.sequencerGain.connect(this.vcaGain);
+    
     this.vcaGain.connect(this.masterGain);
     this.masterGain.connect(this.analyser);
     this.analyser.connect(this.output);
-    this.carrierOsc.start(now);
+    
+    this.carrierOscA.start(now);
+    this.carrierOscB.start(now);
     this.modOsc.start(now);
     this.modOffset.start(now);
   }
@@ -119,10 +154,30 @@ export class SignalChain {
     this.params.carrierFreq = freq;
     const now = this.ctx.currentTime;
     this.trackTransition('frequency');
-    this.carrierOsc!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
+    this.carrierOscA!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
+    this.carrierOscB!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
+    
+    // Maintain phase shift delay
+    const delay = (this.params.carrierPhase / 360) * (1 / Math.max(1, freq));
+    this.phaseDelay!.delayTime.linearRampToValueAtTime(delay, now + POP_FREE_RAMP_SEC);
   }
 
-  public setCarrierWaveform(wave: WaveformType): void { this.params.carrierWaveform = wave; this.carrierOsc!.type = wave; }
+  public setCarrierWaveform(wave: WaveformType): void { this.params.carrierWaveform = wave; this.carrierOscA!.type = wave; }
+  public setCarrierWaveformB(wave: WaveformType): void { this.params.carrierWaveformB = wave; this.carrierOscB!.type = wave; }
+  public setCarrierMorph(morph: number): void {
+    this.params.carrierMorph = morph;
+    const now = this.ctx.currentTime;
+    this.trackTransition('amplitude');
+    this.carrierGainA!.gain.linearRampToValueAtTime(1.0 - morph, now + POP_FREE_RAMP_SEC);
+    this.carrierGainB!.gain.linearRampToValueAtTime(morph, now + POP_FREE_RAMP_SEC);
+  }
+  public setCarrierPhase(phase: number): void {
+    this.params.carrierPhase = phase;
+    const now = this.ctx.currentTime;
+    this.trackTransition('amplitude'); // Using amplitude tracking for phase visual
+    const delay = (phase / 360) * (1 / Math.max(1, this.params.carrierFreq));
+    this.phaseDelay!.delayTime.linearRampToValueAtTime(delay, now + POP_FREE_RAMP_SEC);
+  }
   public setModFrequency(freq: number): void {
     this.params.modFreq = freq;
     const now = this.ctx.currentTime;
@@ -163,8 +218,8 @@ export class SignalChain {
       if (this.params.mode === 'sequenced' && this.steps.length > 0) {
         const step = this.steps[this.currentStepIndex];
         this.trackTransition('amplitude');
-        this.carrierGain!.gain.cancelScheduledValues(now);
-        this.carrierGain!.gain.linearRampToValueAtTime(step.active ? step.amplitude : 0.0001, now + POP_FREE_RAMP_SEC);
+        this.sequencerGain!.gain.cancelScheduledValues(now);
+        this.sequencerGain!.gain.linearRampToValueAtTime(step.active ? step.amplitude : 0.0001, now + POP_FREE_RAMP_SEC);
         if (this.onStepCallback) this.onStepCallback(this.currentStepIndex);
         
         const start = this.params.seqLoopStart ?? 0;
@@ -178,9 +233,12 @@ export class SignalChain {
         const startTime = now;
         const sweepPeriod = this.params.syncToMaster ? (60 / this.params.masterBpm) * 4 : this.params.sweepPeriodSec; 
         const endTime = now + sweepPeriod;
-        this.carrierOsc!.frequency.cancelScheduledValues(startTime);
-        this.carrierOsc!.frequency.setValueAtTime(this.params.sweepStartFreq, startTime);
-        this.carrierOsc!.frequency.linearRampToValueAtTime(this.params.sweepEndFreq, endTime);
+        this.carrierOscA!.frequency.cancelScheduledValues(startTime);
+        this.carrierOscA!.frequency.setValueAtTime(this.params.sweepStartFreq, startTime);
+        this.carrierOscA!.frequency.linearRampToValueAtTime(this.params.sweepEndFreq, endTime);
+        this.carrierOscB!.frequency.cancelScheduledValues(startTime);
+        this.carrierOscB!.frequency.setValueAtTime(this.params.sweepStartFreq, startTime);
+        this.carrierOscB!.frequency.linearRampToValueAtTime(this.params.sweepEndFreq, endTime);
         
         // Schedule the next sweep
         this.seqTimerId = window.setTimeout(tick, sweepPeriod * 1000);
@@ -220,7 +278,8 @@ export class SignalChain {
             this.masterGain!.gain.linearRampToValueAtTime(amp * SAFETY_CEILING_GAIN, t + 0.005);
             this.masterGain!.gain.linearRampToValueAtTime(0.0001, t + pulseDuration);
             
-            this.carrierOsc!.frequency.setValueAtTime(freq, t);
+            this.carrierOscA!.frequency.setValueAtTime(freq, t);
+            this.carrierOscB!.frequency.setValueAtTime(freq, t);
           }
         }
       }
@@ -238,7 +297,8 @@ export class SignalChain {
     };
 
     ramp(this.masterGain!.gain, startIntensity * SAFETY_CEILING_GAIN, endIntensity * SAFETY_CEILING_GAIN);
-    ramp(this.carrierOsc!.frequency, startCarrierFreq, endCarrierFreq);
+    ramp(this.carrierOscA!.frequency, startCarrierFreq, endCarrierFreq);
+    ramp(this.carrierOscB!.frequency, startCarrierFreq, endCarrierFreq);
     ramp(this.modOsc!.frequency, startModFreq, endModFreq);
   }
 
@@ -259,7 +319,7 @@ export class SignalChain {
     return { peak: Math.min(1.0, peak / SAFETY_CEILING_GAIN), rms: Math.min(1.0, rms / (SAFETY_CEILING_GAIN * 0.707)) };
   }
 
-  public destroy(): void { this.stop(); this.carrierOsc?.stop(); this.modOsc?.stop(); this.input.disconnect(); this.output.disconnect(); }
+  public destroy(): void { this.stop(); this.carrierOscA?.stop(); this.carrierOscB?.stop(); this.modOsc?.stop(); this.input.disconnect(); this.output.disconnect(); }
 }
 
 export class SignalEngine {
@@ -291,6 +351,9 @@ export class SignalEngine {
   public stop(): void { this.chains?.left.stop(); this.chains?.right.stop(); this.isRunning = false; }
   public setCarrierFrequency(ch: 'left' | 'right', f: number): void { this.params[ch].carrierFreq = f; this.chains?.[ch].setCarrierFrequency(f); }
   public setCarrierWaveform(ch: 'left' | 'right', w: WaveformType): void { this.params[ch].carrierWaveform = w; this.chains?.[ch].setCarrierWaveform(w); }
+  public setCarrierWaveformB(ch: 'left' | 'right', w: WaveformType): void { this.params[ch].carrierWaveformB = w; this.chains?.[ch].setCarrierWaveformB(w); }
+  public setCarrierMorph(ch: 'left' | 'right', m: number): void { this.params[ch].carrierMorph = m; this.chains?.[ch].setCarrierMorph(m); }
+  public setCarrierPhase(ch: 'left' | 'right', p: number): void { this.params[ch].carrierPhase = p; this.chains?.[ch].setCarrierPhase(p); }
   public setModFrequency(ch: 'left' | 'right', f: number): void { this.params[ch].modFreq = f; this.chains?.[ch].setModFrequency(f); }
   public setModWaveform(ch: 'left' | 'right', w: WaveformType): void { this.params[ch].modWaveform = w; this.chains?.[ch].setModWaveform(w); }
   public setModDepth(ch: 'left' | 'right', d: number): void { this.params[ch].modDepth = d; this.chains?.[ch].setModDepth(d); }

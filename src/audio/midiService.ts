@@ -7,10 +7,22 @@
  * for external control of stimulation parameters.
  */
 
-export type MidiMappingType = 'masterVolume' | 'carrierFreq' | 'modFreq' | 'modDepth';
+export type MidiMappingType = 
+  'masterVolume' | 
+  'carrierFreq' | 
+  'modFreq' | 
+  'modDepth' | 
+  'carrierMorph' | 
+  'carrierPhase' | 
+  'masterBpm' | 
+  'power' | 
+  'mode' | 
+  'sync' | 
+  'channelFocus';
 
 export interface MidiMapping {
-  cc: number;
+  cc?: number;
+  note?: number;
   param: MidiMappingType;
   channel: 'left' | 'right' | 'both';
 }
@@ -22,7 +34,7 @@ export interface MidiLearnState {
   channel: 'left' | 'right' | 'both';
 }
 
-export type MidiLearnCallback = (param: MidiMappingType, cc: number) => void;
+export type MidiLearnCallback = (param: MidiMappingType, id: { cc?: number, note?: number }) => void;
 
 export class MidiService {
   private access: MIDIAccess | null = null;
@@ -32,10 +44,19 @@ export class MidiService {
   private learningState: MidiLearnState | null = null;
   
   private mappings: MidiMapping[] = [
-    { cc: 3, param: 'masterVolume', channel: 'both' }, // MPD218 Knob 1
-    { cc: 9, param: 'carrierFreq', channel: 'both' },   // MPD218 Knob 2
-    { cc: 14, param: 'modFreq', channel: 'both' },     // MPD218 Knob 3
-    { cc: 15, param: 'modDepth', channel: 'both' },    // MPD218 Knob 4
+    // Bank A Knobs (CC)
+    { cc: 3, param: 'masterVolume', channel: 'both' }, // Knob 1
+    { cc: 9, param: 'carrierFreq', channel: 'both' },   // Knob 2
+    { cc: 12, param: 'modFreq', channel: 'both' },     // Knob 3
+    { cc: 13, param: 'modDepth', channel: 'both' },    // Knob 4
+    { cc: 14, param: 'carrierMorph', channel: 'both' }, // Knob 5
+    { cc: 15, param: 'masterBpm', channel: 'both' },   // Knob 6
+    
+    // Bank A Pads (Note)
+    { note: 36, param: 'power', channel: 'both' },    // Pad 1
+    { note: 37, param: 'mode', channel: 'both' },     // Pad 2
+    { note: 38, param: 'sync', channel: 'both' },     // Pad 3
+    { note: 39, param: 'channelFocus', channel: 'both' }, // Pad 4
   ];
 
   public async requestAccess(): Promise<boolean> {
@@ -88,15 +109,17 @@ export class MidiService {
     const [status, data1, data2] = event.data;
     const command = status & 0xf0;
 
-    if (command === 0xb0) { // Control Change
-      const cc = data1;
+    if (command === 0xb0 || command === 0x90) { // Control Change or Note On
+      const isCC = command === 0xb0;
+      const id = data1;
       const value = data2; // 0-127
       
       // Handle MIDI Learn
       if (this.learningState) {
-        this.updateMapping(cc, this.learningState.param, this.learningState.channel);
+        const mappingId = isCC ? { cc: id } : { note: id };
+        this.updateMapping(mappingId, this.learningState.param, this.learningState.channel);
         if (this.onLearnCallback) {
-          this.onLearnCallback(this.learningState.param, cc);
+          this.onLearnCallback(this.learningState.param, mappingId);
         }
         this.learningState = null;
         return;
@@ -104,8 +127,11 @@ export class MidiService {
 
       if (!this.onMessageCallback) return;
 
-      const mapping = this.mappings.find(m => m.cc === cc);
+      const mapping = this.mappings.find(m => isCC ? m.cc === id : m.note === id);
       if (mapping) {
+        // For notes, only trigger on Note On (velocity > 0)
+        if (!isCC && value === 0) return;
+
         const normalizedValue = value / 127;
         
         if (mapping.channel === 'both' || mapping.channel === 'left') {
@@ -118,15 +144,13 @@ export class MidiService {
     }
   }
 
-  public updateMapping(cc: number, param: MidiMappingType, channel: 'left' | 'right' | 'both'): void {
-    // Remove existing mappings for this CC to avoid conflicts if needed, 
-    // but usually multiple params can be mapped to one CC. 
-    // Here we'll just update the specific param/channel combo.
+  public updateMapping(id: { cc?: number, note?: number }, param: MidiMappingType, channel: 'left' | 'right' | 'both'): void {
     const existingIndex = this.mappings.findIndex(m => m.param === param && m.channel === channel);
     if (existingIndex !== -1) {
-      this.mappings[existingIndex].cc = cc;
+      this.mappings[existingIndex].cc = id.cc;
+      this.mappings[existingIndex].note = id.note;
     } else {
-      this.mappings.push({ cc, param, channel });
+      this.mappings.push({ ...id, param, channel });
     }
   }
 
