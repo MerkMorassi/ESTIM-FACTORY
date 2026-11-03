@@ -1,0 +1,6 @@
+{
+  "name": "signal-telemetry-profiler",
+  "description": "Precision Web Audio API dual-layer carrier and modulation waveform profiler for electro-stimulation telemetry research simulation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
