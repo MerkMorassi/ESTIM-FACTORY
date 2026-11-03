@@ -18,6 +18,7 @@ import {
   DualChannelPreset,
 } from './types/telemetry';
 import { SignalEngine, POP_FREE_RAMP_SEC } from './audio/signalEngine';
+import { storage } from './lib/storage';
 import { Oscilloscope } from './components/Oscilloscope';
 import { SpectrumAnalyzer } from './components/SpectrumAnalyzer';
 import { ImpedanceProfiler } from './components/ImpedanceProfiler';
@@ -45,6 +46,7 @@ import {
   Monitor,
   Music,
   PlayCircle,
+  SaveAll,
 } from 'lucide-react';
 
 const DEFAULT_PARAMS: SignalParameters = {
@@ -62,6 +64,10 @@ const DEFAULT_PARAMS: SignalParameters = {
   sweepPeriodSec: 4.0,
   masterVolume: 0.5,
   mode: 'continuous',
+  masterBpm: 120,
+  syncToMaster: false,
+  seqLoopStart: 0,
+  seqLoopEnd: 7,
 };
 
 const DEFAULT_STEPS: SequencerStep[] = [
@@ -170,9 +176,28 @@ export default function App() {
     engineRef.current?.setBurstDuration(channel, ms);
   };
 
+  const dispatchMasterBpm = (bpm: number) => {
+    setParams(prev => ({
+      left: { ...prev.left, masterBpm: bpm },
+      right: { ...prev.right, masterBpm: bpm },
+    }));
+    engineRef.current?.setMasterBpm(bpm);
+  };
+
+  const dispatchSyncToMaster = (channel: 'left' | 'right', sync: boolean) => {
+    handleParamChange(channel, 'syncToMaster', sync);
+    engineRef.current?.setSyncToMaster(channel, sync);
+  };
+
   const dispatchStepsUpdate = (channel: 'left' | 'right', newSteps: SequencerStep[]) => {
     setSteps(prev => ({ ...prev, [channel]: newSteps }));
     engineRef.current?.updateSequencerSteps(channel, newSteps);
+  };
+  
+  const dispatchLoopRange = (channel: 'left' | 'right', start: number, end: number) => {
+    handleParamChange(channel, 'seqLoopStart', start);
+    handleParamChange(channel, 'seqLoopEnd', end);
+    engineRef.current?.setLoopRange(channel, start, end);
   };
 
   const handleSelectPreset = (preset: TelemetryPreset) => {
@@ -374,17 +399,44 @@ export default function App() {
                   <span className="font-bold text-sm">{currentParams.modFreq} Hz</span>
                 </div>
                 <div className="grid grid-cols-3 gap-1.5">
-                  {(['continuous', 'burst', 'sequenced'] as const).map(m => (
+                  {(['continuous', 'burst', 'sequenced', 'sweep'] as const).map(m => (
                     <button key={m} onClick={() => dispatchMode(activeChannel, m)} className={`py-1.5 rounded font-bold uppercase transition-all ${currentParams.mode === m ? 'bg-slate-700 text-white' : 'bg-[#121c27] text-slate-500'}`}>
                       {m}
                     </button>
                   ))}
                 </div>
+                
+                {/* BPM Sync Control */}
+                <div className="bg-[#101720] border border-[#1e293b] rounded-lg p-3 space-y-3">
+                  <div className="flex items-center justify-between text-[9px] font-black text-slate-500 uppercase tracking-widest">
+                    <span className="flex items-center gap-1.5">
+                      <Music className="w-3 h-3" />
+                      Global Master BPM
+                    </span>
+                    <button 
+                      onClick={() => dispatchSyncToMaster(activeChannel, !currentParams.syncToMaster)}
+                      className={`px-2 py-0.5 rounded border transition-all ${currentParams.syncToMaster ? 'bg-amber-950 text-amber-400 border-amber-800' : 'bg-slate-900 text-slate-600 border-slate-800'}`}
+                    >
+                      {currentParams.syncToMaster ? 'SYNC LOCKED' : 'SYNC OFF'}
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <input
+                      type="range" min={40} max={240} step={1}
+                      value={currentParams.masterBpm}
+                      onChange={(e) => dispatchMasterBpm(Number(e.target.value))}
+                      className="flex-1 h-1.5 bg-[#1e293b] rounded appearance-none cursor-pointer accent-amber-500"
+                    />
+                    <span className="w-12 text-center text-xs font-bold text-amber-400">{currentParams.masterBpm}</span>
+                  </div>
+                </div>
+
                 <input
                   type="range" min={1} max={150} step={1}
                   value={currentParams.modFreq}
+                  disabled={currentParams.syncToMaster}
                   onChange={(e) => dispatchModFreq(activeChannel, Number(e.target.value))}
-                  className="w-full h-2 bg-[#1e293b] rounded appearance-none cursor-pointer accent-current"
+                  className={`w-full h-2 rounded appearance-none cursor-pointer accent-current ${currentParams.syncToMaster ? 'bg-[#0b1016] opacity-30' : 'bg-[#1e293b]'}`}
                 />
                 <div className="flex flex-col gap-1.5">
                   <div className="flex justify-between text-[10px] text-slate-500 uppercase font-black">Depth: {Math.round(currentParams.modDepth * 100)}%</div>
@@ -407,31 +459,63 @@ export default function App() {
               </div>
             </div>
 
-            {/* Actions */}
-            <div className="bg-[#0b1016] border border-[#1e293b] rounded-lg p-3 flex gap-2">
-              <button 
-                onClick={() => {
-                  const data = {
-                    timestamp: new Date().toISOString(),
-                    params,
-                    steps,
-                    impedanceModel
-                  };
-                  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `telemetry-session-${Date.now()}.json`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
-                className="flex-1 py-2 bg-[#132230] text-slate-300 hover:text-cyan-300 rounded border border-[#23384f] text-[10px] uppercase font-black transition-colors"
-              >
-                Export Session
-              </button>
-              <button onClick={() => console.log(params)} className="flex-1 py-2 bg-[#132230] text-cyan-300 rounded border border-[#23384f] text-[10px] uppercase font-black">
-                Dump Telemetry
-              </button>
+            {/* Research Actions */}
+            <div className="bg-[#0b1016] border border-[#1e293b] rounded-lg p-3 flex flex-col gap-2">
+              <div className="text-[8px] text-slate-500 font-black uppercase tracking-widest mb-1 flex items-center gap-2">
+                <Download className="w-3 h-3" />
+                Research Data Portability
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button 
+                  onClick={() => {
+                    const data = {
+                      timestamp: new Date().toISOString(),
+                      params,
+                      steps,
+                      impedanceModel
+                    };
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `telemetry-session-${Date.now()}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="py-2 bg-[#132230] text-slate-300 hover:text-cyan-300 rounded border border-[#23384f] text-[9px] uppercase font-black transition-colors"
+                >
+                  Export Session
+                </button>
+                <button 
+                  onClick={async () => {
+                    try {
+                      const protocols = await storage.getProtocols();
+                      const beats = await storage.getBeats();
+                      const bundle = {
+                        version: '2.0',
+                        exportedAt: new Date().toISOString(),
+                        library: {
+                          protocols,
+                          beats
+                        }
+                      };
+                      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `stim-library-bulk-${Date.now()}.json`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    } catch (err) {
+                      console.error("Bulk export failed:", err);
+                    }
+                  }}
+                  className="py-2 bg-[#1a2d40] text-cyan-400 hover:text-cyan-300 rounded border border-cyan-800/50 text-[9px] uppercase font-black transition-colors flex items-center justify-center gap-2"
+                >
+                  <SaveAll className="w-3 h-3" />
+                  Bulk Export
+                </button>
+              </div>
             </div>
           </div>
 
@@ -480,10 +564,21 @@ export default function App() {
             </div>
 
             {activeTab === 'profiler' && <ImpedanceProfiler params={currentParams} impedanceModel={impedanceModel} onUpdateModel={setImpedanceModel} />}
-            {activeTab === 'sequencer' && <PulseSequencer steps={steps[activeChannel]} currentStep={currentStep[activeChannel]} syncClickEnabled={false} onUpdateSteps={s => dispatchStepsUpdate(activeChannel, s)} onToggleSyncClick={() => {}} />}
+            {activeTab === 'sequencer' && (
+              <PulseSequencer 
+                steps={steps[activeChannel]} 
+                currentStep={currentStep[activeChannel]} 
+                loopStart={currentParams.seqLoopStart}
+                loopEnd={currentParams.seqLoopEnd}
+                syncClickEnabled={false} 
+                onUpdateSteps={s => dispatchStepsUpdate(activeChannel, s)} 
+                onUpdateLoopRange={(start, end) => dispatchLoopRange(activeChannel, start, end)}
+                onToggleSyncClick={() => {}} 
+              />
+            )}
             {activeTab === 'spectrum' && <SpectrumAnalyzer engine={engineRef.current} isRunning={isRunning} activeChannel={activeChannel} params={params} />}
             {activeTab === 'ayurvedic' && <AyurvedicHarmonics />}
-            {activeTab === 'composer' && <Composer onPlayProtocol={(p) => engineRef.current?.scheduleProtocol(p)} />}
+            {activeTab === 'composer' && <Composer onPlayProtocol={(p) => engineRef.current?.scheduleProtocol(p)} onStopProtocol={() => engineRef.current?.stop()} />}
             {activeTab === 'player' && <Player engine={engineRef.current} />}
           </div>
         </div>

@@ -35,6 +35,12 @@ export interface SignalParameters {
   // Master output
   masterVolume: number; // 0 to 1 (capped at safe -6 dBFS)
   mode: ModulationMode;
+  masterBpm: number; // Global BPM (e.g., 60-240)
+  syncToMaster: boolean; // Whether to sync sweeps/sequencer to BPM
+  
+  // Sequencer Loop Range
+  seqLoopStart: number;
+  seqLoopEnd: number;
 }
 
 export interface ImpedanceModel {
@@ -118,6 +124,7 @@ export interface StimulationProtocol {
   description: string;
   totalDurationMs: number;
   lastModified: number;
+  masterBpm: number;
   channels: {
     left: ProtocolSegment[];
     right: ProtocolSegment[];

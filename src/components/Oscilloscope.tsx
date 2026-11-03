@@ -92,6 +92,54 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
           if (i === 0) ctx.moveTo(i * envStep, y); else ctx.lineTo(i * envStep, y);
         }
         ctx.stroke();
+
+        // Ramp Interpolator Visualization (New)
+        const trans = engine.getTransitionProgress(activeChannel);
+        if (trans.type !== 'none') {
+          const rampX = width - 120;
+          const rampY = height - 80;
+          const rampW = 100;
+          const rampH = 60;
+
+          // Box
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.8)';
+          ctx.fillRect(rampX - 10, rampY - 10, rampW + 20, rampH + 20);
+          ctx.strokeStyle = '#1e293b';
+          ctx.strokeRect(rampX - 10, rampY - 10, rampW + 20, rampH + 20);
+
+          // Labels
+          ctx.fillStyle = '#64748b';
+          ctx.font = '8px monospace';
+          ctx.fillText('RAMP INTERPOLATOR (30ms)', rampX, rampY - 5);
+          ctx.fillText(trans.type.toUpperCase(), rampX, rampY + rampH + 10);
+
+          // The Curve
+          ctx.strokeStyle = trans.type === 'amplitude' ? '#f59e0b' : '#38bdf8';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          for (let x = 0; x <= rampW; x++) {
+            const t = x / rampW;
+            // Draw a standard 30ms linear ramp for visualization
+            const y = rampY + rampH - (t * rampH);
+            if (x === 0) ctx.moveTo(rampX + x, y); else ctx.lineTo(rampX + x, y);
+          }
+          ctx.stroke();
+
+          // Progress Playhead
+          const px = rampX + (trans.progress * rampW);
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(px, rampY);
+          ctx.lineTo(px, rampY + rampH);
+          ctx.stroke();
+
+          // Glow effect on trace when ramping
+          ctx.shadowBlur = 15;
+          ctx.shadowColor = trans.type === 'amplitude' ? '#f59e0b' : '#38bdf8';
+        } else {
+          ctx.shadowBlur = 0;
+        }
       }
 
       animFrameId.current = requestAnimationFrame(render);

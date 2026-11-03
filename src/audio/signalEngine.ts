@@ -83,8 +83,23 @@ export class SignalChain {
     this.modOffset.start(now);
   }
 
+  private transitionStartTime: number = 0;
+  private transitionType: 'none' | 'amplitude' | 'frequency' = 'none';
+
+  private trackTransition(type: 'amplitude' | 'frequency'): void {
+    this.transitionStartTime = this.ctx.currentTime;
+    this.transitionType = type;
+  }
+
+  public getTransitionProgress(): { progress: number; type: 'none' | 'amplitude' | 'frequency' } {
+    const elapsed = this.ctx.currentTime - this.transitionStartTime;
+    if (elapsed > POP_FREE_RAMP_SEC + 0.02) return { progress: 1, type: 'none' };
+    return { progress: Math.min(1.0, elapsed / POP_FREE_RAMP_SEC), type: this.transitionType };
+  }
+
   public start(): void {
     const now = this.ctx.currentTime;
+    this.trackTransition('amplitude');
     this.masterGain!.gain.cancelScheduledValues(now);
     this.masterGain!.gain.linearRampToValueAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN, now + POP_FREE_RAMP_SEC);
     this.isRunning = true;
@@ -93,6 +108,7 @@ export class SignalChain {
 
   public stop(): void {
     const now = this.ctx.currentTime;
+    this.trackTransition('amplitude');
     this.masterGain!.gain.cancelScheduledValues(now);
     this.masterGain!.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
     this.stopClock();
@@ -102,6 +118,7 @@ export class SignalChain {
   public setCarrierFrequency(freq: number): void {
     this.params.carrierFreq = freq;
     const now = this.ctx.currentTime;
+    this.trackTransition('frequency');
     this.carrierOsc!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
   }
 
@@ -109,12 +126,14 @@ export class SignalChain {
   public setModFrequency(freq: number): void {
     this.params.modFreq = freq;
     const now = this.ctx.currentTime;
+    this.trackTransition('frequency');
     this.modOsc!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
   }
   public setModWaveform(wave: WaveformType): void { this.params.modWaveform = wave; this.modOsc!.type = wave; }
   public setModDepth(depth: number): void {
     this.params.modDepth = depth;
     const now = this.ctx.currentTime;
+    this.trackTransition('amplitude');
     this.modGain!.gain.linearRampToValueAtTime(depth * 0.5, now + POP_FREE_RAMP_SEC);
     this.modOffset!.offset.linearRampToValueAtTime(1.0 - (depth * 0.5), now + POP_FREE_RAMP_SEC);
   }
@@ -122,51 +141,66 @@ export class SignalChain {
     this.params.masterVolume = vol;
     if (!this.isRunning) return;
     const now = this.ctx.currentTime;
+    this.trackTransition('amplitude');
     this.masterGain!.gain.linearRampToValueAtTime(vol * SAFETY_CEILING_GAIN, now + POP_FREE_RAMP_SEC);
   }
   public setMode(mode: ModulationMode): void { this.params.mode = mode; if (this.isRunning) { if (mode === 'sequenced' || mode === 'burst' || mode === 'sweep') this.startClock(); else this.stopClock(); } }
   public setDutyCycle(duty: number): void { this.params.dutyCycle = duty; }
   public setBurstDuration(ms: number): void { this.params.burstDurationMs = ms; }
+  public setMasterBpm(bpm: number): void { this.params.masterBpm = bpm; if (this.isRunning && this.params.syncToMaster) this.startClock(); }
+  public setSyncToMaster(sync: boolean): void { this.params.syncToMaster = sync; if (this.isRunning) this.startClock(); }
+  public setLoopRange(start: number, end: number): void { this.params.seqLoopStart = start; this.params.seqLoopEnd = end; }
   public updateSequencerSteps(steps: SequencerStep[]): void { this.steps = steps.map(s => ({ ...s })); }
   public setOnStepCallback(cb: StepCallback | null): void { this.onStepCallback = cb; }
 
   private startClock(): void {
     this.stopClock();
-    this.currentStepIndex = 0;
+    this.currentStepIndex = Math.max(0, this.params.seqLoopStart || 0);
     const tick = () => {
       if (!this.isRunning) return;
       const now = this.ctx.currentTime;
       
       if (this.params.mode === 'sequenced' && this.steps.length > 0) {
         const step = this.steps[this.currentStepIndex];
+        this.trackTransition('amplitude');
         this.carrierGain!.gain.cancelScheduledValues(now);
         this.carrierGain!.gain.linearRampToValueAtTime(step.active ? step.amplitude : 0.0001, now + POP_FREE_RAMP_SEC);
         if (this.onStepCallback) this.onStepCallback(this.currentStepIndex);
-        this.currentStepIndex = (this.currentStepIndex + 1) % this.steps.length;
+        
+        const start = this.params.seqLoopStart ?? 0;
+        const end = this.params.seqLoopEnd ?? (this.steps.length - 1);
+        
+        this.currentStepIndex++;
+        if (this.currentStepIndex > end || this.currentStepIndex >= this.steps.length) {
+          this.currentStepIndex = Math.max(0, Math.min(start, this.steps.length - 1));
+        }
       } else if (this.params.mode === 'sweep') {
         const startTime = now;
-        const endTime = now + this.params.sweepPeriodSec;
+        const sweepPeriod = this.params.syncToMaster ? (60 / this.params.masterBpm) * 4 : this.params.sweepPeriodSec; 
+        const endTime = now + sweepPeriod;
         this.carrierOsc!.frequency.cancelScheduledValues(startTime);
         this.carrierOsc!.frequency.setValueAtTime(this.params.sweepStartFreq, startTime);
         this.carrierOsc!.frequency.linearRampToValueAtTime(this.params.sweepEndFreq, endTime);
         
         // Schedule the next sweep
-        this.seqTimerId = window.setTimeout(tick, this.params.sweepPeriodSec * 1000);
+        this.seqTimerId = window.setTimeout(tick, sweepPeriod * 1000);
         return;
       }
       
-      this.seqTimerId = window.setTimeout(tick, 1000 / this.params.modFreq);
+      const delayMs = this.params.syncToMaster ? (60000 / this.params.masterBpm) / 4 : (1000 / this.params.modFreq);
+      this.seqTimerId = window.setTimeout(tick, delayMs);
     };
     tick();
   }
 
   private stopClock(): void { if (this.seqTimerId !== null) { clearTimeout(this.seqTimerId); this.seqTimerId = null; } }
 
-  public scheduleSegment(seg: ProtocolSegment, startTime: number): void {
+  public scheduleSegment(seg: ProtocolSegment, startTime: number, masterBpm?: number): void {
     const endTime = startTime + seg.durationSec;
+    const bpm = masterBpm || seg.bpm || 120;
     
-    if (seg.type === 'beat' && seg.steps && seg.bpm) {
-      const stepDuration = 60 / seg.bpm / 4; // 16th note
+    if (seg.type === 'beat' && seg.steps) {
+      const stepDuration = 60 / bpm / 4; // 16th note
       const numSteps = seg.steps.length;
       const totalStepsDuration = stepDuration * numSteps;
       const numLoops = Math.max(1, Math.floor(seg.durationSec / totalStepsDuration));
@@ -264,12 +298,16 @@ export class SignalEngine {
   public setMode(ch: 'left' | 'right', m: SignalParameters['mode']): void { this.params[ch].mode = m; this.chains?.[ch].setMode(m); }
   public setDutyCycle(ch: 'left' | 'right', d: number): void { this.params[ch].dutyCycle = d; this.chains?.[ch].setDutyCycle(d); }
   public setBurstDuration(ch: 'left' | 'right', ms: number): void { this.params[ch].burstDurationMs = ms; this.chains?.[ch].setBurstDuration(ms); }
+  public setMasterBpm(bpm: number): void { this.params.left.masterBpm = bpm; this.params.right.masterBpm = bpm; this.chains?.left.setMasterBpm(bpm); this.chains?.right.setMasterBpm(bpm); }
+  public setSyncToMaster(ch: 'left' | 'right', s: boolean): void { this.params[ch].syncToMaster = s; this.chains?.[ch].setSyncToMaster(s); }
+  public setLoopRange(ch: 'left' | 'right', start: number, end: number): void { this.params[ch].seqLoopStart = start; this.params[ch].seqLoopEnd = end; this.chains?.[ch].setLoopRange(start, end); }
   public updateSequencerSteps(ch: 'left' | 'right', s: SequencerStep[]): void { this.steps[ch] = [...s]; this.chains?.[ch].updateSequencerSteps(s); }
   public setOnStepCallback(ch: 'left' | 'right', cb: StepCallback | null): void { this.chains?.[ch].setOnStepCallback(cb); }
   public getLevels(ch: 'left' | 'right'): { peak: number; rms: number } { return this.chains?.[ch].getLevels() || { peak: 0, rms: 0 }; }
   public getOutputWaveform(ch: 'left' | 'right', b: Float32Array): void { this.chains?.[ch].getOutputWaveform(b); }
   public getOutputFrequency(ch: 'left' | 'right', b: Float32Array): void { this.chains?.[ch].getOutputFrequency(b); }
   public getEnvelopeWaveform(ch: 'left' | 'right', b: Float32Array): void { this.chains?.[ch].getEnvelopeWaveform(b); }
+  public getTransitionProgress(ch: 'left' | 'right'): { progress: number; type: 'none' | 'amplitude' | 'frequency' } { return this.chains?.[ch].getTransitionProgress() || { progress: 0, type: 'none' }; }
   public getIsRunning(): boolean { return this.isRunning; }
   public async scheduleProtocol(p: StimulationProtocol): Promise<void> {
     if (!this.ctx) await this.initAudio();
@@ -277,7 +315,7 @@ export class SignalEngine {
     const now = this.ctx!.currentTime;
     (['left', 'right'] as const).forEach(ch => {
       let time = now;
-      p.channels[ch].forEach(seg => { this.chains?.[ch].scheduleSegment(seg, time); time += seg.durationSec; });
+      p.channels[ch].forEach(seg => { this.chains?.[ch].scheduleSegment(seg, time, p.masterBpm); time += seg.durationSec; });
     });
     this.isRunning = true;
   }

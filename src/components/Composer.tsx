@@ -28,12 +28,14 @@ import {
   FilePlus,
   CirclePlay,
   SaveAll,
-  Copy
+  Copy,
+  Square
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 
 interface ComposerProps {
   onPlayProtocol: (protocol: StimulationProtocol) => void;
+  onStopProtocol: () => void;
 }
 
 const DEFAULT_BEAT_STEPS: BeatStep[] = Array(16).fill(null).map(() => ({ type: 'none' }));
@@ -58,6 +60,7 @@ const INITIAL_PROTOCOL: StimulationProtocol = {
   description: 'Baseline arousal and recruitment sequence',
   totalDurationMs: 0,
   lastModified: Date.now(),
+  masterBpm: 120,
   channels: {
     left: [
       {
@@ -107,12 +110,61 @@ const INITIAL_PROTOCOL: StimulationProtocol = {
   }
 };
 
-export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
+export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol, onStopProtocol }) => {
   const [protocol, setProtocol] = useState<StimulationProtocol>(INITIAL_PROTOCOL);
   const { protocols: savedProtocols, saveProtocol: dbSave, deleteProtocol: dbDelete } = useProtocols();
   const { beats: savedBeats, saveBeat: dbSaveBeat, deleteBeat: dbDeleteBeat } = useBeats();
   const [activeChannel, setActiveChannel] = useState<'left' | 'right'>('left');
   const [sidebarTab, setSidebarTab] = useState<'protocols' | 'beats'>('protocols');
+  
+  // Playback tracking state
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [startTime, setStartTime] = useState<number | null>(null);
+
+  const totalTimeMs = React.useMemo(() => 
+    protocol.channels[activeChannel].reduce((acc, s) => acc + s.durationSec, 0) * 1000
+  , [protocol.channels, activeChannel]);
+
+  React.useEffect(() => {
+    let interval: number;
+    if (isPlaying && startTime) {
+      interval = window.setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        if (elapsed >= totalTimeMs) {
+          handleStop();
+        } else {
+          setElapsedTime(elapsed);
+        }
+      }, 50);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying, startTime, totalTimeMs]);
+
+  const handlePlay = () => {
+    onPlayProtocol(protocol);
+    setStartTime(Date.now());
+    setElapsedTime(0);
+    setIsPlaying(true);
+  };
+
+  const handleStop = () => {
+    onStopProtocol();
+    setIsPlaying(false);
+    setStartTime(null);
+    setElapsedTime(0);
+  };
+
+  const activeSegmentIndex = React.useMemo(() => {
+    if (!isPlaying) return -1;
+    let accumulated = 0;
+    const currentSegments = protocol.channels[activeChannel];
+    for (let i = 0; i < currentSegments.length; i++) {
+      accumulated += currentSegments[i].durationSec * 1000;
+      if (elapsedTime < accumulated) return i;
+    }
+    return -1;
+  }, [isPlaying, elapsedTime, protocol.channels, activeChannel]);
 
   const addSegment = (type: SegmentType = 'ramp') => {
     const newSeg: ProtocolSegment = {
@@ -217,14 +269,14 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
   return (
     <div className="flex h-[750px] bg-[#070b0f] border border-[#1e293b] rounded-lg overflow-hidden font-mono text-xs">
       {/* Sidebar: Library */}
-      <div className="w-64 border-r border-[#1e293b] bg-[#0b1016] flex flex-col">
+      <aside className="w-64 border-r border-[#1e293b] bg-[#0b1016] flex flex-col">
         <div className="p-4 border-b border-[#1e293b] flex items-center justify-between bg-[#0d141e]">
           <span className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
             <ListMusic className="w-3.5 h-3.5 text-cyan-500" />
             Library
           </span>
           <button 
-            onClick={() => setProtocol({ ...INITIAL_PROTOCOL, id: undefined, name: 'New Protocol', channels: { left: [], right: [] } })}
+            onClick={() => setProtocol({ ...INITIAL_PROTOCOL, id: undefined, name: 'New Protocol', masterBpm: 120, channels: { left: [], right: [] } })}
             className="p-1 hover:bg-slate-800 rounded text-slate-500 hover:text-cyan-400"
             title="New Protocol"
           >
@@ -285,12 +337,12 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
           {sidebarTab === 'protocols' && savedProtocols.length === 0 && <div className="py-8 text-center text-slate-700 italic text-[10px]">Empty Protocol List</div>}
           {sidebarTab === 'beats' && savedBeats.length === 0 && <div className="py-8 text-center text-slate-700 italic text-[10px]">No Beat Templates</div>}
         </div>
-      </div>
+      </aside>
 
       {/* Main Editor */}
-      <div className="flex-1 flex flex-col bg-[#0b1016]">
+      <main className="flex-1 flex flex-col bg-[#0b1016]">
         {/* Editor Header */}
-        <div className="p-4 border-b border-[#1e293b] flex flex-wrap items-center justify-between gap-4 bg-[#0d141e]">
+        <header className="p-4 border-b border-[#1e293b] flex flex-wrap items-center justify-between gap-4 bg-[#0d141e]">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded bg-cyan-900/50 flex items-center justify-center border border-cyan-800">
               <Layers className="w-4 h-4 text-cyan-400" />
@@ -306,18 +358,39 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button onClick={saveProtocol} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-950/30 hover:bg-emerald-900/40 text-emerald-400 rounded border border-emerald-800 transition-all font-black uppercase text-[10px]">
-              <Save className="w-3.5 h-3.5" /> Commit
-            </button>
-            <button onClick={() => onPlayProtocol(protocol)} className="flex items-center gap-2 px-4 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-all font-black uppercase text-[10px] shadow-[0_0_15px_rgba(6,182,212,0.4)]">
-              <CirclePlay className="w-3.5 h-3.5" /> Preview Sequence
-            </button>
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-3 px-3 py-1.5 bg-[#070b0f] border border-[#1e293b] rounded-lg">
+              <span className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Master BPM</span>
+              <input 
+                type="number"
+                min="40"
+                max="240"
+                value={protocol.masterBpm}
+                onChange={e => setProtocol({ ...protocol, masterBpm: Number(e.target.value) })}
+                className="bg-transparent border-none text-amber-400 font-black text-sm focus:outline-none w-12 text-center"
+              />
+              <Music className="w-3.5 h-3.5 text-slate-700" />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button onClick={saveProtocol} className="flex items-center gap-2 px-3 py-1.5 bg-emerald-950/30 hover:bg-emerald-900/40 text-emerald-400 rounded border border-emerald-800 transition-all font-black uppercase text-[10px]">
+                <Save className="w-3.5 h-3.5" /> Commit
+              </button>
+              {!isPlaying ? (
+                <button onClick={handlePlay} className="flex items-center gap-2 px-4 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-all font-black uppercase text-[10px] shadow-[0_0_15px_rgba(6,182,212,0.4)]">
+                  <CirclePlay className="w-3.5 h-3.5" /> Preview Sequence
+                </button>
+              ) : (
+                <button onClick={handleStop} className="flex items-center gap-2 px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded transition-all font-black uppercase text-[10px] shadow-[0_0_15px_rgba(225,29,72,0.4)]">
+                  <Square className="w-3.5 h-3.5" /> Stop Preview
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        </header>
 
         {/* Channel Switcher */}
-        <div className="px-6 pt-4 flex items-center gap-4">
+        <nav className="px-6 pt-4 flex items-center gap-4">
           <div className="flex items-center gap-1 bg-[#070b0f] p-1 rounded-lg border border-[#16202c]">
             <button 
               onClick={() => setActiveChannel('left')}
@@ -345,22 +418,36 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
               {protocol.channels[activeChannel].length} Stages
             </span>
           </div>
-        </div>
+        </nav>
 
         {/* Timeline Editor */}
-        <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 custom-scrollbar">
+        <section className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 custom-scrollbar">
           {/* Visual Timeline Minimap */}
-          <div className="h-2 bg-[#070b0f] rounded-full border border-[#16202c] overflow-hidden flex mb-2">
+          <div className="h-4 bg-[#070b0f] rounded-lg border border-[#16202c] overflow-hidden flex mb-2 relative">
             {protocol.channels[activeChannel].map((seg, idx) => (
               <div 
                 key={seg.id}
-                className="h-full border-r border-[#0b1016] transition-all hover:brightness-125"
+                className={`h-full border-r border-[#0b1016] transition-all relative ${activeSegmentIndex === idx ? 'brightness-150' : 'brightness-100'}`}
                 style={{ 
                   width: `${(seg.durationSec / Math.max(totalTime, 1)) * 100}%`,
                   backgroundColor: seg.type === 'beat' ? 'hsl(30, 80%, 45%)' : `hsl(${200 + (idx * 15)}, 70%, 40%)` 
                 }}
-              />
+              >
+                {activeSegmentIndex === idx && (
+                  <motion.div 
+                    layoutId="active-seg-glow"
+                    className="absolute inset-0 bg-white/20 animate-pulse"
+                  />
+                )}
+              </div>
             ))}
+            {/* Playhead */}
+            {isPlaying && (
+              <motion.div 
+                className="absolute top-0 bottom-0 w-0.5 bg-white z-20 shadow-[0_0_8px_white]"
+                style={{ left: `${(elapsedTime / totalTimeMs) * 100}%` }}
+              />
+            )}
           </div>
 
           <Reorder.Group axis="y" values={protocol.channels[activeChannel]} onReorder={reorderSegments} className="flex flex-col gap-4">
@@ -370,14 +457,19 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
                   key={seg.id}
                   value={seg}
                   initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
+                  animate={{ 
+                    opacity: 1, 
+                    y: 0,
+                    borderColor: activeSegmentIndex === idx ? 'rgba(6, 182, 212, 0.5)' : 'rgba(26, 43, 60, 1)',
+                    backgroundColor: activeSegmentIndex === idx ? 'rgba(13, 20, 30, 1)' : 'rgba(13, 20, 30, 1)'
+                  }}
                   exit={{ opacity: 0, scale: 0.95 }}
-                  className="group bg-[#0d141e] border border-[#1a2b3c] rounded-xl p-4 flex flex-col gap-4 relative overflow-hidden"
+                  className={`group border rounded-xl p-4 flex flex-col gap-4 relative overflow-hidden transition-colors ${activeSegmentIndex === idx ? 'ring-1 ring-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.1)]' : ''}`}
                 >
-                  <div className={`absolute top-0 left-0 w-1 h-full ${seg.type === 'beat' ? 'bg-amber-500/50' : 'bg-cyan-500/50'}`} />
+                  <div className={`absolute top-0 left-0 w-1 h-full ${seg.type === 'beat' ? 'bg-amber-500/50' : 'bg-cyan-500/50'} ${activeSegmentIndex === idx ? 'animate-pulse shadow-[0_0_8px_currentColor]' : ''}`} />
                   
                   {/* Segment Header */}
-                  <div className="flex items-center justify-between border-b border-[#16212e] pb-2">
+                  <header className="flex items-center justify-between border-b border-[#16212e] pb-2">
                     <div className="flex items-center gap-3">
                       <div className="cursor-grab active:cursor-grabbing p-1 hover:bg-[#162433] rounded transition-colors text-slate-600 group-hover:text-slate-400">
                         <GripVertical className="w-4 h-4" />
@@ -415,7 +507,7 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                  </div>
+                  </header>
 
                   {seg.type === 'ramp' ? (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-2">
@@ -501,7 +593,7 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-[#16212e]">
+                  <footer className="flex items-center justify-between mt-2 pt-2 border-t border-[#16212e]">
                     <div className="flex gap-3">
                        <span className="text-[9px] text-slate-600 font-black uppercase">Curve</span>
                        <div className="flex gap-1.5">
@@ -519,7 +611,7 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
                     <div className="flex items-center gap-4 text-[9px] text-slate-600 font-black uppercase italic">
                        {seg.type === 'ramp' ? `f: ${seg.startCarrierFreq}-${seg.endCarrierFreq}Hz` : `rhythm: 16th notes`}
                     </div>
-                  </div>
+                  </footer>
                 </Reorder.Item>
               ))}
             </AnimatePresence>
@@ -541,10 +633,10 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
               <span className="font-black uppercase tracking-widest text-[10px]">Append Beat Rhythm</span>
             </button>
           </div>
-        </div>
+        </section>
 
         {/* Timeline Footer */}
-        <div className="bg-[#0d141e] border-t border-[#1e293b] p-4 flex items-center justify-between">
+        <footer className="bg-[#0d141e] border-t border-[#1e293b] p-4 flex items-center justify-between">
           <div className="flex items-center gap-2 px-4 py-2 bg-[#070b0f] border border-[#1a2b3c] rounded text-[10px] text-slate-600 font-black uppercase tracking-tighter">
             <Lock className="w-3.5 h-3.5 text-rose-800" />
             Safety Interlock: Ramping Enforced
@@ -552,8 +644,8 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol }) => {
           <div className="text-[10px] text-slate-500 font-mono">
             Stereo-Coherent Output Active
           </div>
-        </div>
-      </div>
+        </footer>
+      </main>
     </div>
   );
 };

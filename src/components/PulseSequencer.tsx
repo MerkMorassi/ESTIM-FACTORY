@@ -14,16 +14,22 @@ import { Sliders, Volume2, Bell } from 'lucide-react';
 interface PulseSequencerProps {
   steps: SequencerStep[];
   currentStep: number;
+  loopStart: number;
+  loopEnd: number;
   syncClickEnabled: boolean;
   onUpdateSteps: (newSteps: SequencerStep[]) => void;
+  onUpdateLoopRange: (start: number, end: number) => void;
   onToggleSyncClick: (enabled: boolean) => void;
 }
 
 export const PulseSequencer: React.FC<PulseSequencerProps> = ({
   steps,
   currentStep,
+  loopStart,
+  loopEnd,
   syncClickEnabled,
   onUpdateSteps,
+  onUpdateLoopRange,
   onToggleSyncClick,
 }) => {
   const toggleStepActive = (idx: number) => {
@@ -78,7 +84,39 @@ export const PulseSequencer: React.FC<PulseSequencerProps> = ({
           MULTI-STEP DUTY-CYCLE PULSE ARRAY (8-STEP MATRIX)
         </span>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* Loop Range Settings */}
+          <div className="flex items-center gap-2 px-3 py-1 bg-[#101720] border border-[#1e293b] rounded text-[10px]">
+            <span className="text-slate-500 font-bold uppercase tracking-tighter">Loop Range:</span>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min="0"
+                max={loopEnd}
+                value={loopStart}
+                onChange={(e) => {
+                  const val = Math.max(0, Number(e.target.value));
+                  onUpdateLoopRange(Math.min(val, loopEnd), loopEnd);
+                }}
+                className="w-8 bg-[#070b0f] border border-[#1e293b] text-cyan-400 px-1 py-0.5 rounded text-center focus:outline-none focus:border-cyan-500"
+              />
+              <span className="text-slate-600">to</span>
+              <input
+                type="number"
+                min={loopStart}
+                max={steps.length - 1}
+                value={loopEnd}
+                onChange={(e) => {
+                  const val = Math.min(steps.length - 1, Number(e.target.value));
+                  onUpdateLoopRange(loopStart, Math.max(val, loopStart));
+                }}
+                className="w-8 bg-[#070b0f] border border-[#1e293b] text-cyan-400 px-1 py-0.5 rounded text-center focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+          </div>
+
+          <span className="text-slate-600">|</span>
+
           {/* Quick patterns */}
           <div className="flex items-center gap-1">
             <button
@@ -133,12 +171,15 @@ export const PulseSequencer: React.FC<PulseSequencerProps> = ({
       <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
         {steps.map((step, idx) => {
           const isCurrent = currentStep === idx;
+          const isInLoop = idx >= loopStart && idx <= loopEnd;
           return (
             <div
               key={idx}
               className={`flex flex-col items-center gap-2 p-2 rounded border transition-all ${
                 isCurrent
                   ? 'bg-[#142332] border-cyan-400 shadow-[0_0_12px_rgba(0,240,255,0.25)]'
+                  : isInLoop
+                  ? 'bg-[#0f1822] border-cyan-900/50'
                   : step.active
                   ? 'bg-[#0f1822] border-[#223347]'
                   : 'bg-[#0a0f15] border-[#16212e] opacity-60'
@@ -146,9 +187,14 @@ export const PulseSequencer: React.FC<PulseSequencerProps> = ({
             >
               {/* Step indicator header */}
               <div className="flex items-center justify-between w-full text-[10px]">
-                <span className={isCurrent ? 'text-cyan-300 font-bold' : 'text-slate-500'}>
-                  #{idx + 1}
-                </span>
+                <div className="flex items-center gap-1">
+                  <span className={isCurrent ? 'text-cyan-300 font-bold' : 'text-slate-500'}>
+                    #{idx + 1}
+                  </span>
+                  {isInLoop && !isCurrent && (
+                    <span className="text-[8px] text-cyan-700 font-bold uppercase tracking-tighter">Loop</span>
+                  )}
+                </div>
                 <span
                   className={`w-2 h-2 rounded-full ${
                     isCurrent
