@@ -8,6 +8,30 @@ import { WATCHDOG_PROCESSOR_NAME, WATCHDOG_WORKLET_SOURCE } from './watchdogWork
 
 export const POP_FREE_RAMP_SEC = 0.030;
 export const COLD_START_RAMP_SEC = 2.0;
+
+/**
+ * Per-channel electrode guard (SYS.AI.MAYA.GITHUB). A gain stage <= 1 that sits
+ * after the watchdog and before the final 0.5 ceiling limiter, so it can only
+ * lower output, never raise it past the existing caps.
+ *  - ceiling: fraction of the 0.5 safety ceiling this channel may reach.
+ *  - soft start: on power-on the stage begins at ceiling x startFraction and
+ *    ramps linearly to ceiling over rampSec (default 60 s).
+ */
+export interface ChannelGuard {
+  ceiling: number;
+  startFraction: number;
+  rampSec: number;
+}
+export const DEFAULT_CHANNEL_GUARD: ChannelGuard = { ceiling: 1, startFraction: 0.35, rampSec: 60 };
+
+export function sanitizeGuard(g: Partial<ChannelGuard> | undefined): ChannelGuard {
+  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+  return {
+    ceiling: Math.min(1, Math.max(0.05, num(g?.ceiling, DEFAULT_CHANNEL_GUARD.ceiling))),
+    startFraction: Math.min(1, Math.max(0.05, num(g?.startFraction, DEFAULT_CHANNEL_GUARD.startFraction))),
+    rampSec: Math.min(300, Math.max(0, num(g?.rampSec, DEFAULT_CHANNEL_GUARD.rampSec))),
+  };
+}
 export const WATCHDOG_TIMEOUT_MS = 1000;
 /** Fade from the last protocol stage's end level to silence (SYS.AI.MAYA.GITHUB). */
 export const PROTOCOL_END_FADE_SEC = 0.5;
@@ -57,6 +81,11 @@ export class SignalChain {
   private masterGain: GainNode | null = null;
   private muteGain: GainNode | null = null;
   private watchdogGain: GainNode | null = null;
+  /** Electrode guard stage: <= 1, ceiling + 60 s soft start (SYS.AI.MAYA.GITHUB). */
+  private electrodeGain: GainNode | null = null;
+  private guard: ChannelGuard = { ...DEFAULT_CHANNEL_GUARD };
+  /** ctx time the current soft start began; null when stopped. */
+  private softStartOrigin: number | null = null;
   private ceilingLimiter: WaveShaperNode | null = null;
   
   private modOsc: OscillatorNode | null = null;
@@ -154,6 +183,9 @@ export class SignalChain {
     this.watchdogGain = this.ctx.createGain();
     this.watchdogGain.gain.setValueAtTime(0.0001, now);
 
+    this.electrodeGain = this.ctx.createGain();
+    this.electrodeGain.gain.setValueAtTime(this.guard.ceiling * this.guard.startFraction, now);
+
     this.ceilingLimiter = this.ctx.createWaveShaper();
     this.ceilingLimiter.curve = buildCeilingCurve() as unknown as Float32Array<ArrayBuffer>;
     this.ceilingLimiter.oversample = 'none';
@@ -220,11 +252,12 @@ export class SignalChain {
     this.phaseDelay.connect(this.sequencerGain);
     this.sequencerGain.connect(this.vcaGain);
     
-    // STRICT LINEAR ROUTING: vca -> master -> mute -> watchdog -> ceilingLimiter -> analyser -> output
+    // STRICT LINEAR ROUTING: vca -> master -> mute -> watchdog -> electrodeGuard -> ceilingLimiter -> analyser -> output
     this.vcaGain.connect(this.masterGain);
     this.masterGain.connect(this.muteGain);
     this.muteGain.connect(this.watchdogGain);
-    this.watchdogGain.connect(this.ceilingLimiter);
+    this.watchdogGain.connect(this.electrodeGain);
+    this.electrodeGain.connect(this.ceilingLimiter);
     this.ceilingLimiter.connect(this.analyser);
     this.analyser.connect(this.output);
     
@@ -360,10 +393,64 @@ export class SignalChain {
     }
   }
 
-  public start(): void {
+  /** Current electrode guard target for the soft-start stage at time t. */
+  private guardValueAt(t: number): number {
+    const { ceiling, startFraction, rampSec } = this.guard;
+    if (this.softStartOrigin === null || rampSec <= 0) return ceiling;
+    const p = Math.min(1, Math.max(0, (t - this.softStartOrigin) / rampSec));
+    return ceiling * (startFraction + (1 - startFraction) * p);
+  }
+
+  /** (Re)schedule the electrode stage from `now` to the end of the soft start. */
+  private applySoftStart(now: number, fast: boolean = false): void {
+    const g = this.electrodeGain?.gain;
+    if (!g) return;
+    const target = this.guardValueAt(now);
+    g.cancelScheduledValues(now);
+    if (fast) {
+      g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(target, now + POP_FREE_RAMP_SEC);
+    } else {
+      g.setValueAtTime(target, now);
+    }
+    if (this.softStartOrigin !== null && this.guard.rampSec > 0) {
+      const end = this.softStartOrigin + this.guard.rampSec;
+      const from = now + (fast ? POP_FREE_RAMP_SEC : 0);
+      if (end > from) g.linearRampToValueAtTime(this.guard.ceiling, end);
+    }
+  }
+
+  /** Apply a new electrode guard. Lowering takes effect within 30 ms. */
+  public setGuard(next: ChannelGuard): void {
+    this.guard = sanitizeGuard(next);
+    if (!this.electrodeGain) return;
+    const now = this.ctx.currentTime;
+    if (this.isRunning) {
+      this.applySoftStart(now, true);
+    } else {
+      this.electrodeGain.gain.cancelScheduledValues(now);
+      this.electrodeGain.gain.setValueAtTime(this.guard.ceiling * this.guard.startFraction, now);
+    }
+  }
+
+  public getGuard(): ChannelGuard { return { ...this.guard }; }
+
+  /** Seconds since the soft start began, or null when stopped. */
+  public softStartElapsed(): number | null {
+    return this.softStartOrigin === null ? null : this.ctx.currentTime - this.softStartOrigin;
+  }
+
+  /**
+   * @param softStartElapsedSec seconds of soft start already served this
+   *   session (a patch remount while running continues the ramp instead of
+   *   restarting it).
+   */
+  public start(softStartElapsedSec: number = 0): void {
     this.resetToParams();
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
+    this.softStartOrigin = now - Math.max(0, softStartElapsedSec);
+    this.applySoftStart(now);
 
     // Cold Start Safety: 2 second ramp from silence (0.0001) to 1.0
     this.watchdogGain!.gain.setValueAtTime(0.0001, now);
@@ -385,6 +472,7 @@ export class SignalChain {
   public stop(): void {
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
+    this.softStartOrigin = null;
     this.cancelAutomation();
     this.stopClock();
 
@@ -723,6 +811,7 @@ export class SignalChain {
     this.phaseDelay?.disconnect();
     this.sequencerGain?.disconnect();
     this.vcaGain?.disconnect();
+    this.electrodeGain?.disconnect();
     this.modOsc?.disconnect();
     this.modGain?.disconnect();
     this.modOffset?.disconnect();
@@ -748,6 +837,11 @@ export class SignalEngine {
   
   private crossFMConnection: GainNode | null = null;
   private protocolEndTimer: number | null = null;
+  /** Electrode guard per channel (SYS.AI.MAYA.GITHUB). Survives patch remounts. */
+  private guards: { left: ChannelGuard; right: ChannelGuard } = {
+    left: { ...DEFAULT_CHANNEL_GUARD },
+    right: { ...DEFAULT_CHANNEL_GUARD },
+  };
   // Audio-thread watchdog (AudioWorklet): merger -> outputGate -> destination.
   private outputGate: AudioWorkletNode | null = null;
   private gateCtx: BaseAudioContext | null = null;
@@ -869,6 +963,11 @@ export class SignalEngine {
     steps?: { left: SequencerStep[]; right: SequencerStep[] }, 
     startImmediately: boolean = false
   ): Promise<void> {
+    // A remount while running keeps the electrode soft start where it was.
+    const carriedSoftStart = {
+      left: this.isRunning ? this.chains?.left.softStartElapsed() ?? 0 : 0,
+      right: this.isRunning ? this.chains?.right.softStartElapsed() ?? 0 : 0,
+    };
     // Any new patch supersedes a pending protocol-end power-off.
     this.clearProtocolEndTimer();
     if (!this.ctx || this.ctx.state === 'closed') {
@@ -901,6 +1000,9 @@ export class SignalEngine {
       right: new SignalChain(this.ctx!, this.params.right, this.steps.right) 
     };
     
+    this.chains.left.setGuard(this.guards.left);
+    this.chains.right.setGuard(this.guards.right);
+
     this.chains.left.output.connect(this.merger!, 0, 0);
     this.chains.right.output.connect(this.merger!, 0, 1);
 
@@ -917,11 +1019,26 @@ export class SignalEngine {
     this.crossFMConnection.connect(this.chains.right.carrierB!.frequency);
 
     if (startImmediately) {
-      this.chains.left.start();
-      this.chains.right.start();
+      this.chains.left.start(carriedSoftStart.left);
+      this.chains.right.start(carriedSoftStart.right);
       this.isRunning = true;
       this.postGate('arm');
     }
+  }
+
+  /** Set a channel's electrode guard (ceiling + soft start). Applies live. */
+  public setElectrodeGuard(ch: 'left' | 'right', guard: Partial<ChannelGuard>): void {
+    this.guards[ch] = sanitizeGuard({ ...this.guards[ch], ...guard });
+    this.chains?.[ch].setGuard(this.guards[ch]);
+  }
+
+  public getElectrodeGuard(ch: 'left' | 'right'): ChannelGuard {
+    return { ...this.guards[ch] };
+  }
+
+  /** Seconds into the current soft start for a channel, or null when stopped. */
+  public getSoftStartElapsed(ch: 'left' | 'right'): number | null {
+    return this.isRunning ? this.chains?.[ch].softStartElapsed() ?? null : null;
   }
 
   public heartbeat(): void {
