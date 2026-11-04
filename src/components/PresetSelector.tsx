@@ -127,6 +127,79 @@ export const NEUROMUSCULAR_PRESETS: TelemetryPreset[] = [
   },
 ];
 
+export const EXPERIENCE_PROTOCOLS: TelemetryPreset[] = [
+  {
+    id: 'phase-swirl',
+    name: 'PHASE-ROTATIONAL SWIRL',
+    description: '100Hz Sine carrier with 180° phase offset. Creates a sensation of spatial "movement" between electrodes.',
+    carrierFreq: 100,
+    carrierWave: 'sine',
+    modFreq: 8,
+    modWave: 'sine',
+    modDepth: 0.8,
+    mode: 'continuous',
+    dutyCycle: 0.5,
+    burstDurationMs: 50,
+    targetImpedanceOhms: 1800,
+  },
+  {
+    id: 'edge-crescendo',
+    name: 'THE EDGE CRESCENDO',
+    description: 'Sequenced 8-step build-up with a sudden drop-out on step 8 to prevent sensory overload and build tension.',
+    carrierFreq: 2500,
+    carrierWave: 'sine',
+    modFreq: 15,
+    modWave: 'sine',
+    modDepth: 1.0,
+    mode: 'sequenced',
+    dutyCycle: 0.5,
+    burstDurationMs: 40,
+    targetImpedanceOhms: 650,
+  },
+  {
+    id: 'harmonic-scan',
+    name: 'NERVE-FIBER HARMONIC SCAN',
+    description: '4000Hz high-carrier targets deep tissue with ultra-slow (0.5Hz) triangle modulation for rolling recruitment.',
+    carrierFreq: 4000,
+    carrierWave: 'sine',
+    modFreq: 0.5,
+    modWave: 'triangle',
+    modDepth: 1.0,
+    mode: 'continuous',
+    dutyCycle: 0.5,
+    burstDurationMs: 50,
+    targetImpedanceOhms: 450,
+  },
+  {
+    id: 'gallop-sequence',
+    name: 'THE GALLOP SEQUENCE',
+    description: 'Non-metronomic "urgent" rhythmic pulse sequence at 130 BPM. Urgent recruitment profile.',
+    carrierFreq: 120,
+    carrierWave: 'triangle',
+    modFreq: 10,
+    modWave: 'sine',
+    modDepth: 0.7,
+    mode: 'burst',
+    dutyCycle: 0.3,
+    burstDurationMs: 80,
+    targetImpedanceOhms: 1900,
+  },
+  {
+    id: 'somatic-breath',
+    name: 'SOMATIC BREATH',
+    description: 'Ultra-low 20Hz carrier with 4Hz sine modulation. Mimics deep biological breathing rhythms for relaxation research.',
+    carrierFreq: 20,
+    carrierWave: 'sine',
+    modFreq: 4,
+    modWave: 'sine',
+    modDepth: 0.5,
+    mode: 'continuous',
+    dutyCycle: 0.5,
+    burstDurationMs: 50,
+    targetImpedanceOhms: 2800,
+  },
+];
+
 export const SENSORY_MAPPING_PRESETS: TelemetryPreset[] = [
   {
     id: 'prostate-sensory-100',
@@ -200,6 +273,13 @@ export const DUAL_STIM_LABIAL_VAGINAL: DualChannelPreset[] = [
     description: 'Dual-path crescendo matrix for threshold research across labial and vaginal sensors.',
     left: { carrierFreq: 120, carrierWave: 'sine', modFreq: 15, modWave: 'sine', modDepth: 1.0, mode: 'sequenced', dutyCycle: 0.5, burstDurationMs: 40, targetImpedanceOhms: 1900 },
     right: { carrierFreq: 100, carrierWave: 'sine', modFreq: 15, modWave: 'sine', modDepth: 1.0, mode: 'sequenced', dutyCycle: 0.5, burstDurationMs: 40, targetImpedanceOhms: 1800 },
+  },
+  {
+    id: 'binaural-tissue-beat',
+    name: 'BINAURAL TISSUE BEAT',
+    description: '100Hz (L) vs 102Hz (R). Generates a deep 2Hz interference beat directly within the nerve clusters.',
+    left: { carrierFreq: 100, carrierWave: 'sine', modFreq: 10, modWave: 'sine', modDepth: 0.8, mode: 'continuous', dutyCycle: 0.5, burstDurationMs: 50, targetImpedanceOhms: 1800 },
+    right: { carrierFreq: 102, carrierWave: 'sine', modFreq: 10, modWave: 'sine', modDepth: 0.8, mode: 'continuous', dutyCycle: 0.5, burstDurationMs: 50, targetImpedanceOhms: 1500 },
   },
 ];
 
@@ -363,6 +443,16 @@ export const PresetSelector: React.FC<PresetSelectorProps> = ({
             </span>
           </div>
           {renderPresetGrid(CLINICAL_TENS_PRESETS)}
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between border-b border-[#1e293b] pb-2 text-slate-400">
+            <span className="flex items-center gap-1.5 text-cyan-400 font-semibold">
+              <Bookmark className="w-3.5 h-3.5" />
+              ADVANCED EXPERIENCE PROTOCOLS
+            </span>
+          </div>
+          {renderPresetGrid(EXPERIENCE_PROTOCOLS)}
         </div>
 
         <div className="flex flex-col gap-3">

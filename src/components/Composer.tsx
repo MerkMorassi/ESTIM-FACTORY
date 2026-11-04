@@ -105,6 +105,21 @@ const INITIAL_PROTOCOL: StimulationProtocol = {
         endModFreq: 5,
         interpolation: 'linear',
         label: 'Baseline Mapping'
+      },
+      {
+        id: crypto.randomUUID(),
+        type: 'beat',
+        durationSec: 15,
+        startIntensity: 0.7,
+        endIntensity: 0.7,
+        startCarrierFreq: 120,
+        endCarrierFreq: 120,
+        startModFreq: 10,
+        endModFreq: 10,
+        interpolation: 'linear',
+        bpm: 130,
+        steps: Array(16).fill(null).map((_, i) => ({ type: (i % 4 === 0 || i % 4 === 1 || i % 4 === 3) ? 'bass' : 'none' })),
+        label: 'Phase 3: The Gallop'
       }
     ]
   }

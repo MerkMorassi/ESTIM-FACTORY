@@ -6,7 +6,13 @@
 import { SignalParameters, SequencerStep, WaveformType, StimulationProtocol, ProtocolSegment, ModulationMode } from '../types/telemetry';
 
 export const POP_FREE_RAMP_SEC = 0.030;
+export const COLD_START_RAMP_SEC = 2.0;
+export const WATCHDOG_TIMEOUT_MS = 1000;
 export const SAFETY_CEILING_GAIN = 0.50;
+
+// RMS Compensation: Sine (0.707) vs Triangle (0.577)
+// Factor to bring Triangle up to Sine weight: 0.707 / 0.577 ≈ 1.2247
+const getRMSFactor = (type: WaveformType) => (type === 'triangle' ? 1.2247 : 1.0);
 
 export type StepCallback = (stepIndex: number) => void;
 
@@ -24,6 +30,7 @@ export class SignalChain {
   private vcaGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
   private muteGain: GainNode | null = null;
+  private watchdogGain: GainNode | null = null;
   
   private modOsc: OscillatorNode | null = null;
   private modGain: GainNode | null = null;
@@ -39,6 +46,12 @@ export class SignalChain {
   private isRunning: boolean = false;
   private isMuted: boolean = false;
   private onStepCallback: StepCallback | null = null;
+  
+  private lastHeartbeat: number = 0;
+  private watchdogInterval: number | null = null;
+  private jitterInterval: number | null = null;
+
+  private asymmetricWave: PeriodicWave | null = null;
 
   constructor(ctx: AudioContext, initialParams: SignalParameters, steps: SequencerStep[]) {
     this.ctx = ctx;
@@ -46,7 +59,34 @@ export class SignalChain {
     this.steps = steps.map(s => ({ ...s }));
     this.input = ctx.createGain();
     this.output = ctx.createGain();
+    
+    // Create Asymmetric Wave (Approximation of asymmetric biphasic pulse)
+    const real = new Float32Array([0, 1, 0.5, 0.25, 0.125]);
+    const imag = new Float32Array([0, 0, 0, 0, 0]);
+    this.asymmetricWave = ctx.createPeriodicWave(real, imag);
+
     this.buildGraph();
+    this.startWatchdog();
+    this.startJitter();
+  }
+
+  private startJitter(): void {
+    this.jitterInterval = window.setInterval(() => {
+      if (!this.isRunning || this.params.jitterAmount <= 0) return;
+      
+      const now = this.ctx.currentTime;
+      const amount = this.params.jitterAmount;
+      
+      // Jitter Frequency (up to 2% drift)
+      const freqOffset = (Math.random() - 0.5) * 0.04 * amount * this.params.carrierFreq;
+      this.carrierOscA!.frequency.linearRampToValueAtTime(this.params.carrierFreq + freqOffset, now + 0.1);
+      this.carrierOscB!.frequency.linearRampToValueAtTime(this.params.carrierFreq + freqOffset, now + 0.1);
+      
+      // Jitter Depth (up to 5% drift)
+      const depthOffset = (Math.random() - 0.5) * 0.1 * amount;
+      const targetDepth = Math.max(0, Math.min(1, this.params.modDepth + depthOffset));
+      this.modGain!.gain.linearRampToValueAtTime(targetDepth * 0.5, now + 0.1);
+    }, 150);
   }
 
   private buildGraph(): void {
@@ -55,10 +95,16 @@ export class SignalChain {
     this.analyser.fftSize = 2048;
     this.envAnalyser = this.ctx.createAnalyser();
     this.envAnalyser.fftSize = 1024;
+    
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.setValueAtTime(0.0001, now);
+    
     this.muteGain = this.ctx.createGain();
     this.muteGain.gain.setValueAtTime(1.0, now);
+
+    this.watchdogGain = this.ctx.createGain();
+    this.watchdogGain.gain.setValueAtTime(0.0001, now);
+
     this.vcaGain = this.ctx.createGain();
     this.vcaGain.gain.setValueAtTime(0.0, now);
     
@@ -73,22 +119,28 @@ export class SignalChain {
     
     // Carrier A
     this.carrierOscA = this.ctx.createOscillator();
-    this.carrierOscA.type = this.params.carrierWaveform;
+    this.applyWaveform(this.carrierOscA, this.params.carrierWaveform);
     this.carrierOscA.frequency.setValueAtTime(this.params.carrierFreq, now);
     this.carrierGainA = this.ctx.createGain();
-    const gainA = 1.0 - this.params.carrierMorph;
+    
+    // RMS Normalized Gain A
+    const rmsA = getRMSFactor(this.params.carrierWaveform);
+    const gainA = (1.0 - this.params.carrierMorph) * rmsA;
     this.carrierGainA.gain.setValueAtTime(gainA, now);
     
     // Carrier B
     this.carrierOscB = this.ctx.createOscillator();
-    this.carrierOscB.type = this.params.carrierWaveformB;
+    this.applyWaveform(this.carrierOscB, this.params.carrierWaveformB);
     this.carrierOscB.frequency.setValueAtTime(this.params.carrierFreq, now);
     this.carrierGainB = this.ctx.createGain();
-    const gainB = this.params.carrierMorph;
+    
+    // RMS Normalized Gain B
+    const rmsB = getRMSFactor(this.params.carrierWaveformB);
+    const gainB = this.params.carrierMorph * rmsB;
     this.carrierGainB.gain.setValueAtTime(gainB, now);
 
     this.modOsc = this.ctx.createOscillator();
-    this.modOsc.type = this.params.modWaveform;
+    this.applyWaveform(this.modOsc, this.params.modWaveform);
     this.modOsc.frequency.setValueAtTime(this.params.modFreq, now);
     this.modGain = this.ctx.createGain();
     this.modGain.gain.setValueAtTime(this.params.modDepth * 0.5, now);
@@ -114,13 +166,46 @@ export class SignalChain {
     
     this.vcaGain.connect(this.masterGain);
     this.masterGain.connect(this.muteGain);
-    this.muteGain.connect(this.analyser);
+    this.masterGain.connect(this.watchdogGain);
+    this.watchdogGain.connect(this.analyser);
     this.analyser.connect(this.output);
     
     this.carrierOscA.start(now);
     this.carrierOscB.start(now);
     this.modOsc.start(now);
     this.modOffset.start(now);
+  }
+
+  private applyWaveform(osc: OscillatorNode, wave: WaveformType): void {
+    if (wave === 'asymmetric') {
+      osc.setPeriodicWave(this.asymmetricWave!);
+    } else {
+      osc.type = wave as OscillatorType;
+    }
+  }
+
+  private startWatchdog(): void {
+    this.lastHeartbeat = Date.now();
+    this.watchdogInterval = window.setInterval(() => {
+      const elapsed = Date.now() - this.lastHeartbeat;
+      if (elapsed > WATCHDOG_TIMEOUT_MS && this.isRunning) {
+        console.error("WATCHDOG TIMEOUT: Audio killed due to thread freeze.");
+        this.emergencyStop();
+      }
+    }, 200);
+  }
+
+  public heartbeat(): void {
+    this.lastHeartbeat = Date.now();
+  }
+
+  private emergencyStop(): void {
+    if (!this.watchdogGain) return;
+    const now = this.ctx.currentTime;
+    this.watchdogGain.gain.cancelScheduledValues(now);
+    this.watchdogGain.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
+    this.stopClock();
+    this.isRunning = false;
   }
 
   private transitionStartTime: number = 0;
@@ -142,6 +227,7 @@ export class SignalChain {
     const now = this.ctx.currentTime;
     this.masterGain.gain.cancelScheduledValues(now);
     this.muteGain!.gain.cancelScheduledValues(now);
+    this.watchdogGain!.gain.cancelScheduledValues(now);
     this.carrierOscA!.frequency.cancelScheduledValues(now);
     this.carrierOscB!.frequency.cancelScheduledValues(now);
     this.modOsc!.frequency.cancelScheduledValues(now);
@@ -155,9 +241,14 @@ export class SignalChain {
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
     this.cancelAutomation();
+    
+    // Cold Start Safety: 2 second ramp
+    this.watchdogGain!.gain.linearRampToValueAtTime(1.0, now + COLD_START_RAMP_SEC);
     this.masterGain!.gain.linearRampToValueAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN, now + POP_FREE_RAMP_SEC);
     this.muteGain!.gain.linearRampToValueAtTime(this.isMuted ? 0.0001 : 1.0, now + POP_FREE_RAMP_SEC);
+    
     this.isRunning = true;
+    this.lastHeartbeat = Date.now();
     if (this.params.mode === 'sequenced' || this.params.mode === 'burst' || this.params.mode === 'sweep') this.startClock();
   }
 
@@ -165,6 +256,7 @@ export class SignalChain {
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
     this.cancelAutomation();
+    this.watchdogGain!.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
     this.masterGain!.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
     this.stopClock();
     this.isRunning = false;
@@ -188,21 +280,40 @@ export class SignalChain {
     this.carrierOscB!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
     
     // Maintain phase shift delay
-    const delay = (this.params.carrierPhase / 360) * (1 / Math.max(1, freq));
     this.phaseDelay!.delayTime.cancelScheduledValues(now);
+    const delay = (this.params.carrierPhase / 360) * (1 / Math.max(1, freq));
     this.phaseDelay!.delayTime.linearRampToValueAtTime(delay, now + POP_FREE_RAMP_SEC);
   }
 
-  public setCarrierWaveform(wave: WaveformType): void { this.params.carrierWaveform = wave; this.carrierOscA!.type = wave; }
-  public setCarrierWaveformB(wave: WaveformType): void { this.params.carrierWaveformB = wave; this.carrierOscB!.type = wave; }
+  public setCarrierWaveform(wave: WaveformType): void { 
+    this.params.carrierWaveform = wave; 
+    this.applyWaveform(this.carrierOscA!, wave);
+    this.setCarrierMorph(this.params.carrierMorph); // Recalculate RMS
+  }
+  public setCarrierWaveformB(wave: WaveformType): void { 
+    this.params.carrierWaveformB = wave; 
+    this.applyWaveform(this.carrierOscB!, wave);
+    this.setCarrierMorph(this.params.carrierMorph); // Recalculate RMS
+  }
+  public setJitterAmount(amount: number): void {
+    this.params.jitterAmount = amount;
+  }
   public setCarrierMorph(morph: number): void {
     this.params.carrierMorph = morph;
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
+    
+    // RMS Normalized Gain A
+    const rmsA = getRMSFactor(this.params.carrierWaveform);
+    const targetA = (1.0 - morph) * rmsA;
     this.carrierGainA!.gain.cancelScheduledValues(now);
-    this.carrierGainA!.gain.linearRampToValueAtTime(1.0 - morph, now + POP_FREE_RAMP_SEC);
+    this.carrierGainA!.gain.linearRampToValueAtTime(targetA, now + POP_FREE_RAMP_SEC);
+    
+    // RMS Normalized Gain B
+    const rmsB = getRMSFactor(this.params.carrierWaveformB);
+    const targetB = morph * rmsB;
     this.carrierGainB!.gain.cancelScheduledValues(now);
-    this.carrierGainB!.gain.linearRampToValueAtTime(morph, now + POP_FREE_RAMP_SEC);
+    this.carrierGainB!.gain.linearRampToValueAtTime(targetB, now + POP_FREE_RAMP_SEC);
   }
   public setCarrierPhase(phase: number): void {
     this.params.carrierPhase = phase;
@@ -219,7 +330,10 @@ export class SignalChain {
     this.modOsc!.frequency.cancelScheduledValues(now);
     this.modOsc!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
   }
-  public setModWaveform(wave: WaveformType): void { this.params.modWaveform = wave; this.modOsc!.type = wave; }
+  public setModWaveform(wave: WaveformType): void { 
+    this.params.modWaveform = wave; 
+    this.applyWaveform(this.modOsc!, wave);
+  }
   public setModDepth(depth: number): void {
     this.params.modDepth = depth;
     const now = this.ctx.currentTime;
@@ -362,7 +476,16 @@ export class SignalChain {
     return { peak: Math.min(1.0, peak / SAFETY_CEILING_GAIN), rms: Math.min(1.0, rms / (SAFETY_CEILING_GAIN * 0.707)) };
   }
 
-  public destroy(): void { this.stop(); this.carrierOscA?.stop(); this.carrierOscB?.stop(); this.modOsc?.stop(); this.input.disconnect(); this.output.disconnect(); }
+  public destroy(): void { 
+    if (this.watchdogInterval) clearInterval(this.watchdogInterval);
+    if (this.jitterInterval) clearInterval(this.jitterInterval);
+    this.stop(); 
+    this.carrierOscA?.stop(); 
+    this.carrierOscB?.stop(); 
+    this.modOsc?.stop(); 
+    this.input.disconnect(); 
+    this.output.disconnect(); 
+  }
 }
 
 export class SignalEngine {
@@ -390,6 +513,11 @@ export class SignalEngine {
     return true;
   }
 
+  public heartbeat(): void {
+    this.chains?.left.heartbeat();
+    this.chains?.right.heartbeat();
+  }
+
   public async start(): Promise<void> { if (!this.ctx) await this.initAudio(); this.chains?.left.start(); this.chains?.right.start(); this.isRunning = true; }
   public stop(): void { this.chains?.left.stop(); this.chains?.right.stop(); this.isRunning = false; }
   public setMute(ch: 'left' | 'right', muted: boolean): void { this.chains?.[ch].setMute(muted); }
@@ -398,6 +526,7 @@ export class SignalEngine {
   public setCarrierWaveformB(ch: 'left' | 'right', w: WaveformType): void { this.params[ch].carrierWaveformB = w; this.chains?.[ch].setCarrierWaveformB(w); }
   public setCarrierMorph(ch: 'left' | 'right', m: number): void { this.params[ch].carrierMorph = m; this.chains?.[ch].setCarrierMorph(m); }
   public setCarrierPhase(ch: 'left' | 'right', p: number): void { this.params[ch].carrierPhase = p; this.chains?.[ch].setCarrierPhase(p); }
+  public setJitterAmount(ch: 'left' | 'right', a: number): void { this.params[ch].jitterAmount = a; this.chains?.[ch].setJitterAmount(a); }
   public setModFrequency(ch: 'left' | 'right', f: number): void { this.params[ch].modFreq = f; this.chains?.[ch].setModFrequency(f); }
   public setModWaveform(ch: 'left' | 'right', w: WaveformType): void { this.params[ch].modWaveform = w; this.chains?.[ch].setModWaveform(w); }
   public setModDepth(ch: 'left' | 'right', d: number): void { this.params[ch].modDepth = d; this.chains?.[ch].setModDepth(d); }

@@ -5,7 +5,7 @@
  * Telemetry types and telemetry models for low-voltage signal simulation.
  */
 
-export type WaveformType = 'sine' | 'triangle';
+export type WaveformType = 'sine' | 'triangle' | 'asymmetric';
 
 export type ModulationMode = 'continuous' | 'burst' | 'sequenced' | 'sweep';
 
@@ -44,6 +44,12 @@ export interface SignalParameters {
   // Sequencer Loop Range
   seqLoopStart: number;
   seqLoopEnd: number;
+
+  // Nerve Accommodation Mitigation
+  jitterAmount: number; // 0 to 1
+
+  // Performance Macro
+  performanceMacro: number; // 0 to 1
 }
 
 export interface ImpedanceModel {

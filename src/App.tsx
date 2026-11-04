@@ -54,6 +54,7 @@ import {
   Settings as SettingsIcon,
   RotateCcw,
   RotateCw,
+  Dices,
 } from 'lucide-react';
 import { midiService, MidiMappingType } from './audio/midiService';
 import { Settings } from './components/Settings';
@@ -86,6 +87,8 @@ const DEFAULT_PARAMS: SignalParameters = {
   syncToMaster: false,
   seqLoopStart: 0,
   seqLoopEnd: 7,
+  jitterAmount: 0.0,
+  performanceMacro: 0.0,
 };
 
 const DEFAULT_STEPS: SequencerStep[] = [
@@ -103,7 +106,7 @@ export default function App() {
   const { state: appState, setState: setAppState, undo, redo, canUndo, canRedo } = useUndoRedo<SessionState>({
     params: {
       left: { ...DEFAULT_PARAMS, carrierFreq: 2500, masterVolume: 0.7 },
-      right: { ...DEFAULT_PARAMS, carrierFreq: 100, masterVolume: 0.7 },
+      right: { ...DEFAULT_PARAMS, carrierFreq: 440, masterVolume: 0.7 },
     },
     steps: {
       left: DEFAULT_STEPS.map(s => ({ ...s })),
@@ -132,6 +135,7 @@ export default function App() {
   const [isLearning, setIsLearning] = useState<boolean>(false);
   const [isMpd218Connected, setIsMpd218Connected] = useState<boolean>(false);
   const [muted, setMuted] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
+  const [isInverseLinked, setIsInverseLinked] = useState<boolean>(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; param: MidiMappingType; channel: 'left' | 'right' | 'both' } | null>(null);
 
   const engineRef = useRef<SignalEngine | null>(null);
@@ -199,10 +203,18 @@ export default function App() {
     const handleClickOutside = () => setContextMenu(null);
     window.addEventListener('click', handleClickOutside);
 
+    // Safety Heartbeat Loop
+    const heartbeatInterval = window.setInterval(() => {
+      if (engineRef.current) {
+        engineRef.current.heartbeat();
+      }
+    }, 250);
+
     return () => {
       engine.destroy();
       engineRef.current = null;
       window.removeEventListener('click', handleClickOutside);
+      clearInterval(heartbeatInterval);
     };
   }, []);
 
@@ -280,6 +292,30 @@ export default function App() {
     engineRef.current?.setCarrierPhase(channel, phase);
   };
 
+  const dispatchJitterAmount = (channel: 'left' | 'right', amount: number) => {
+    handleParamChange(channel, 'jitterAmount', amount);
+    engineRef.current?.setJitterAmount(channel, amount);
+  };
+
+  const dispatchPerformanceMacro = (channel: 'left' | 'right', value: number) => {
+    handleParamChange(channel, 'performanceMacro', value);
+    
+    // Performance Macro Logic:
+    // 1. Map to Volume (0.2 -> 1.0 multiplier of base)
+    const vol = 0.3 + (value * 0.7);
+    dispatchMasterVolume(channel, vol);
+    
+    // 2. Map to Mod Freq (Scales towards higher frequencies)
+    const baseFreq = 5;
+    const maxFreq = 80;
+    const freq = Math.round(baseFreq + (value * (maxFreq - baseFreq)));
+    dispatchModFreq(channel, freq);
+    
+    // 3. Map to Mod Depth
+    const depth = 0.4 + (value * 0.6);
+    dispatchModDepth(channel, depth);
+  };
+
   const dispatchModFreq = (channel: 'left' | 'right', freq: number) => {
     handleParamChange(channel, 'modFreq', freq);
     engineRef.current?.setModFrequency(channel, freq);
@@ -296,8 +332,23 @@ export default function App() {
   };
 
   const dispatchMasterVolume = (channel: 'left' | 'right', vol: number) => {
-    handleParamChange(channel, 'masterVolume', vol);
-    engineRef.current?.setMasterVolume(channel, vol);
+    if (isInverseLinked) {
+      const otherChannel = channel === 'left' ? 'right' : 'left';
+      const otherVol = 1.0 - vol;
+      setAppState(prev => ({
+        ...prev,
+        params: {
+          ...prev.params,
+          [channel]: { ...prev.params[channel], masterVolume: vol },
+          [otherChannel]: { ...prev.params[otherChannel], masterVolume: otherVol }
+        }
+      }));
+      engineRef.current?.setMasterVolume(channel, vol);
+      engineRef.current?.setMasterVolume(otherChannel, otherVol);
+    } else {
+      handleParamChange(channel, 'masterVolume', vol);
+      engineRef.current?.setMasterVolume(channel, vol);
+    }
   };
 
   const dispatchMode = (channel: 'left' | 'right', mode: ModulationMode) => {
@@ -462,6 +513,50 @@ export default function App() {
     }
   };
 
+  const randomizeActiveChannel = () => {
+    const channel = activeChannel;
+    const modes: ModulationMode[] = ['continuous', 'burst', 'sequenced', 'sweep'];
+    const waves: WaveformType[] = ['sine', 'triangle'];
+    
+    const randomParams = {
+      carrierFreq: Math.round(20 + Math.random() * 3980), // 20-4000Hz
+      carrierWaveform: waves[Math.floor(Math.random() * waves.length)],
+      carrierWaveformB: waves[Math.floor(Math.random() * waves.length)],
+      carrierMorph: Number(Math.random().toFixed(2)),
+      carrierPhase: Math.round(Math.random() * 360),
+      modFreq: Math.round(2 + Math.random() * 148), // 2-150Hz
+      modWaveform: waves[Math.floor(Math.random() * waves.length)],
+      modDepth: Number((0.2 + Math.random() * 0.8).toFixed(2)), // 20-100%
+      mode: modes[Math.floor(Math.random() * modes.length)],
+      dutyCycle: Number((0.2 + Math.random() * 0.6).toFixed(2)), // 20-80%
+      burstDurationMs: Math.round(20 + Math.random() * 480), // 20-500ms
+    };
+
+    setAppState(prev => ({
+      ...prev,
+      params: {
+        ...prev.params,
+        [channel]: { ...prev.params[channel], ...randomParams }
+      }
+    }));
+
+    if (engineRef.current) {
+      engineRef.current.setCarrierFrequency(channel, randomParams.carrierFreq);
+      engineRef.current.setCarrierWaveform(channel, randomParams.carrierWaveform);
+      engineRef.current.setCarrierWaveformB(channel, randomParams.carrierWaveformB);
+      engineRef.current.setCarrierMorph(channel, randomParams.carrierMorph);
+      engineRef.current.setCarrierPhase(channel, randomParams.carrierPhase);
+      engineRef.current.setModFrequency(channel, randomParams.modFreq);
+      engineRef.current.setModWaveform(channel, randomParams.modWaveform);
+      engineRef.current.setModDepth(channel, randomParams.modDepth);
+      engineRef.current.setMode(channel, randomParams.mode);
+      engineRef.current.setBurstDuration(channel, randomParams.burstDurationMs);
+      engineRef.current.setDutyCycle(channel, randomParams.dutyCycle);
+    }
+    
+    setActivePresetId(null);
+  };
+
   const currentParams = params[activeChannel];
 
   return (
@@ -520,6 +615,15 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsInverseLinked(!isInverseLinked)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded font-bold text-[10px] border transition-all ${isInverseLinked ? 'bg-amber-950 text-amber-300 border-amber-700 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'bg-[#15202c] text-slate-400 border-[#23384f] hover:text-amber-300'}`}
+              title="Panning Mode: Raising one volume lowers the other"
+            >
+              <Split className="w-3.5 h-3.5" />
+              PANNING LINK
+            </button>
+
             <button
               onClick={handleSpeakerTest}
               disabled={isTestingAudio}
@@ -602,7 +706,17 @@ export default function App() {
                 <ChevronRight className="w-3 h-3" />
                 Editing: Channel {activeChannel === 'left' ? '1 (Left)' : '2 (Right)'}
               </div>
-              <Monitor className="w-3.5 h-3.5" />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={randomizeActiveChannel}
+                  className="flex items-center gap-1.5 px-2 py-1 bg-cyan-900/40 hover:bg-cyan-800/60 text-cyan-400 rounded border border-cyan-800 transition-colors text-[9px] font-bold"
+                  title="Randomize Parameters"
+                >
+                  <Dices className="w-3 h-3" />
+                  RANDOMIZE
+                </button>
+                <Monitor className="w-3.5 h-3.5" />
+              </div>
             </div>
 
             <div className={`bg-[#0b1016] border border-[#1e293b] rounded-b-lg p-4 flex flex-col gap-4 font-mono text-xs ${activeChannel === 'left' ? 'border-t-cyan-600' : 'border-t-emerald-600'}`}>
@@ -625,9 +739,9 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1.5">
                     <div className="text-[9px] text-slate-500 font-bold uppercase">Base (A)</div>
-                    <div className="grid grid-cols-2 gap-1">
-                      {(['sine', 'triangle'] as const).map(w => (
-                        <button key={w} onClick={() => dispatchCarrierWave(activeChannel, w)} className={`py-1 text-[9px] rounded font-bold uppercase transition-all ${currentParams.carrierWaveform === w ? 'bg-slate-700 text-white border border-slate-600' : 'bg-[#121c27] text-slate-500 border border-transparent'}`}>
+                    <div className="grid grid-cols-3 gap-1">
+                      {(['sine', 'triangle', 'asymmetric'] as const).map(w => (
+                        <button key={w} onClick={() => dispatchCarrierWave(activeChannel, w)} className={`py-1 text-[8px] rounded font-bold uppercase transition-all ${currentParams.carrierWaveform === w ? 'bg-slate-700 text-white border border-slate-600' : 'bg-[#121c27] text-slate-500 border border-transparent'}`}>
                           {w}
                         </button>
                       ))}
@@ -635,9 +749,9 @@ export default function App() {
                   </div>
                   <div className="space-y-1.5">
                     <div className="text-[9px] text-slate-500 font-bold uppercase">Morph (B)</div>
-                    <div className="grid grid-cols-2 gap-1">
-                      {(['sine', 'triangle'] as const).map(w => (
-                        <button key={w} onClick={() => dispatchCarrierWaveB(activeChannel, w)} className={`py-1 text-[9px] rounded font-bold uppercase transition-all ${currentParams.carrierWaveformB === w ? 'bg-slate-700 text-white border border-slate-600' : 'bg-[#121c27] text-slate-500 border border-transparent'}`}>
+                    <div className="grid grid-cols-3 gap-1">
+                      {(['sine', 'triangle', 'asymmetric'] as const).map(w => (
+                        <button key={w} onClick={() => dispatchCarrierWaveB(activeChannel, w)} className={`py-1 text-[8px] rounded font-bold uppercase transition-all ${currentParams.carrierWaveformB === w ? 'bg-slate-700 text-white border border-slate-600' : 'bg-[#121c27] text-slate-500 border border-transparent'}`}>
                           {w}
                         </button>
                       ))}
@@ -733,6 +847,19 @@ export default function App() {
                     className="w-full h-1.5 bg-[#1e293b] rounded appearance-none cursor-pointer accent-current"
                   />
                 </div>
+
+                <div className="flex flex-col gap-1.5 pt-1">
+                  <div className="flex justify-between text-[10px] text-emerald-600 uppercase font-black">
+                    Nerve Jitter: {Math.round(currentParams.jitterAmount * 100)}%
+                  </div>
+                  <input
+                    type="range" min={0} max={1} step={0.01}
+                    value={currentParams.jitterAmount}
+                    onChange={(e) => dispatchJitterAmount(activeChannel, Number(e.target.value))}
+                    className="w-full h-1.5 bg-[#1e293b] rounded appearance-none cursor-pointer accent-emerald-500"
+                  />
+                </div>
+
                 <div className="flex flex-col gap-1.5">
                   <div className="flex justify-between text-[10px] text-slate-500 uppercase font-black">Ch. Volume: {Math.round(currentParams.masterVolume * 100)}%</div>
                   <input
@@ -742,6 +869,27 @@ export default function App() {
                     onChange={(e) => dispatchMasterVolume(activeChannel, Number(e.target.value))}
                     className="w-full h-1.5 bg-[#1e293b] rounded appearance-none cursor-pointer accent-current"
                   />
+                </div>
+
+                {/* Macro Control */}
+                <div className="bg-[#1a1610] border border-amber-900/30 rounded-lg p-3 space-y-2 mt-2">
+                  <div className="flex items-center justify-between text-[9px] font-black text-amber-500 uppercase tracking-widest">
+                    <span className="flex items-center gap-1.5">
+                      <Zap className="w-3 h-3" />
+                      Performance Macro
+                    </span>
+                    <span className="text-[8px] text-amber-700">MULTI-PARAM LINK</span>
+                  </div>
+                  <input
+                    type="range" min={0} max={1} step={0.01}
+                    value={currentParams.performanceMacro}
+                    onChange={(e) => dispatchPerformanceMacro(activeChannel, Number(e.target.value))}
+                    className="w-full h-2 bg-[#2a2010] rounded appearance-none cursor-pointer accent-amber-500"
+                  />
+                  <div className="flex justify-between text-[7px] text-amber-800 font-bold uppercase">
+                    <span>Baseline</span>
+                    <span>Intense</span>
+                  </div>
                 </div>
               </div>
             </div>
