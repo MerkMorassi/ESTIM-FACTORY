@@ -93,7 +93,7 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
         }
         ctx.stroke();
 
-        // Ramp Interpolator Visualization (New)
+        // Ramp Interpolator Visualization
         const trans = engine.getTransitionProgress(activeChannel);
         if (trans.type !== 'none') {
           const rampX = width - 120;
@@ -119,7 +119,6 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
           ctx.beginPath();
           for (let x = 0; x <= rampW; x++) {
             const t = x / rampW;
-            // Draw a standard 30ms linear ramp for visualization
             const y = rampY + rampH - (t * rampH);
             if (x === 0) ctx.moveTo(rampX + x, y); else ctx.lineTo(rampX + x, y);
           }
@@ -140,6 +139,64 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({
         } else {
           ctx.shadowBlur = 0;
         }
+
+        // Sensation Map / Recruitment Mapping (New Overlay)
+        const recruitment = engine.getRecruitment(activeChannel);
+        const mapX = 15;
+        const mapY = height - 100;
+        const barW = 8;
+        const barH = 80;
+        const gap = 15;
+
+        // Background Box
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+        ctx.fillRect(mapX - 5, mapY - 15, 80, barH + 30);
+        ctx.strokeStyle = '#1e293b';
+        ctx.strokeRect(mapX - 5, mapY - 15, 80, barH + 30);
+
+        ctx.fillStyle = '#64748b';
+        ctx.font = '8px font-mono';
+        ctx.fillText('RECRUITMENT', mapX, mapY - 5);
+
+        // A-Beta (Sensory)
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(mapX, mapY, barW, barH);
+        ctx.fillStyle = '#06b6d4';
+        ctx.fillRect(mapX, mapY + barH, barW, -recruitment.aBeta * barH);
+        
+        // A-Delta (Acute)
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(mapX + gap, mapY, barW, barH);
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillRect(mapX + gap, mapY + barH, barW, -recruitment.aDelta * barH);
+        
+        // C-Fiber (Deep)
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(mapX + gap * 2, mapY, barW, barH);
+        ctx.fillStyle = '#f43f5e';
+        ctx.fillRect(mapX + gap * 2, mapY + barH, barW, -recruitment.cFiber * barH);
+
+        // Labels
+        ctx.save();
+        ctx.translate(mapX + 5, mapY + barH + 10);
+        ctx.rotate(Math.PI / 2);
+        ctx.fillStyle = '#06b6d4';
+        ctx.fillText('Aβ', 0, 0);
+        ctx.restore();
+
+        ctx.save();
+        ctx.translate(mapX + gap + 5, mapY + barH + 10);
+        ctx.rotate(Math.PI / 2);
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillText('Aδ', 0, 0);
+        ctx.restore();
+
+        ctx.save();
+        ctx.translate(mapX + gap * 2 + 5, mapY + barH + 10);
+        ctx.rotate(Math.PI / 2);
+        ctx.fillStyle = '#f43f5e';
+        ctx.fillText('C', 0, 0);
+        ctx.restore();
       }
 
       animFrameId.current = requestAnimationFrame(render);

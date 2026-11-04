@@ -8,14 +8,15 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { SignalEngine } from '../audio/signalEngine';
+import { SignalParameters } from '../types/telemetry';
 import { motion, AnimatePresence } from 'motion/react';
-import { Power, Zap, Activity, ShieldCheck, Speaker } from 'lucide-react';
+import { Power, Zap, Activity, ShieldCheck, Speaker, Split } from 'lucide-react';
 
 interface HardwareDashboardProps {
   engine: SignalEngine | null;
   isRunning: boolean;
   onTogglePower: () => void;
-  params: { left: { masterVolume: number }; right: { masterVolume: number } };
+  params: { left: SignalParameters; right: SignalParameters };
 }
 
 export const HardwareDashboard: React.FC<HardwareDashboardProps> = ({
@@ -120,9 +121,55 @@ export const HardwareDashboard: React.FC<HardwareDashboardProps> = ({
         </div>
       </div>
 
-      <div className="flex items-center gap-2 text-[8px] text-slate-500 bg-[#0d141e] p-2 rounded border border-[#172230]">
-        <ShieldCheck className="w-3 h-3 text-emerald-500 shrink-0" />
-        <span>STEREO ISOLATION LAYER ENABLED. SIMULTANEOUS DUAL-CH OUTPUT ACTIVE.</span>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="flex flex-col gap-2">
+          <div className="text-[8px] text-slate-500 font-black uppercase tracking-widest">Advanced Signal Link</div>
+          <button 
+            onClick={() => engine?.setCrossChannelFM(!params.left.crossChannelFM)}
+            className={`flex items-center justify-between p-3 rounded-lg border transition-all ${params.left.crossChannelFM ? 'bg-cyan-950/30 border-cyan-500 text-cyan-400' : 'bg-slate-900 border-slate-800 text-slate-600'}`}
+          >
+            <div className="flex items-center gap-2">
+              <Split className="w-4 h-4" />
+              <span className="text-[10px] font-bold uppercase">Cross-Channel FM</span>
+            </div>
+            <div className={`w-2 h-2 rounded-full ${params.left.crossChannelFM ? 'bg-cyan-400 shadow-[0_0_8px_#00f0ff]' : 'bg-slate-800'}`} />
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div className="text-[8px] text-slate-500 font-black uppercase tracking-widest">Skin Environment</div>
+          <button 
+            onClick={() => engine?.setSimulatedSweat(!params.left.simulatedSweat)}
+            className={`flex items-center justify-between p-3 rounded-lg border transition-all ${params.left.simulatedSweat ? 'bg-emerald-950/30 border-emerald-500 text-emerald-400' : 'bg-slate-900 border-slate-800 text-slate-600'}`}
+          >
+            <div className="flex items-center gap-2">
+              <Activity className="w-4 h-4" />
+              <span className="text-[10px] font-bold uppercase">Simulated Sweat</span>
+            </div>
+            <div className={`w-2 h-2 rounded-full ${params.left.simulatedSweat ? 'bg-emerald-400 shadow-[0_0_8px_#10b981]' : 'bg-slate-800'}`} />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 text-[8px] text-slate-500 bg-[#0d141e] p-3 rounded border border-[#172230]">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+          <span>STEREO ISOLATION LAYER ENABLED. SIMULTANEOUS DUAL-CH OUTPUT ACTIVE.</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex flex-col items-end">
+            <span className="text-[7px] text-slate-600 font-black">CH1 IMPEDANCE</span>
+            <span className={`text-[10px] font-mono font-bold ${params.left.simulatedSweat ? 'text-emerald-400' : 'text-slate-400'}`}>
+              {Math.round(engine?.getCurrentImpedance('left') || 1000)} Ω
+            </span>
+          </div>
+          <div className="flex flex-col items-end">
+            <span className="text-[7px] text-slate-600 font-black">CH2 IMPEDANCE</span>
+            <span className={`text-[10px] font-mono font-bold ${params.right.simulatedSweat ? 'text-emerald-400' : 'text-slate-400'}`}>
+              {Math.round(engine?.getCurrentImpedance('right') || 1000)} Ω
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   );

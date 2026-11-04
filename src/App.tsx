@@ -89,6 +89,8 @@ const DEFAULT_PARAMS: SignalParameters = {
   seqLoopEnd: 7,
   jitterAmount: 0.0,
   performanceMacro: 0.0,
+  crossChannelFM: false,
+  simulatedSweat: false,
 };
 
 const DEFAULT_STEPS: SequencerStep[] = [
@@ -116,6 +118,14 @@ export default function App() {
 
   const params = appState.params;
   const steps = appState.steps;
+  
+  // Sync engine state when params change (for certain fields)
+  useEffect(() => {
+    if (engineRef.current) {
+      engineRef.current.setCrossChannelFM(params.left.crossChannelFM);
+      engineRef.current.setSimulatedSweat(params.left.simulatedSweat);
+    }
+  }, [params.left.crossChannelFM, params.left.simulatedSweat]);
 
   const [impedanceModel, setImpedanceModel] = useState<ImpedanceModel>({
     nominalResistance: 800,
@@ -417,10 +427,14 @@ export default function App() {
     
     setAppState(prev => ({
       ...prev,
-      params: { ...prev.params, [channel]: updated }
+      params: { ...prev.params, [channel]: updated },
+      steps: preset.steps ? { ...prev.steps, [channel]: preset.steps } : prev.steps
     }));
     
     if (engineRef.current) {
+      if (preset.steps) {
+        engineRef.current.updateSequencerSteps(channel, preset.steps);
+      }
       engineRef.current.setCarrierFrequency(channel, preset.carrierFreq);
       engineRef.current.setCarrierWaveform(channel, preset.carrierWave);
       engineRef.current.setModFrequency(channel, preset.modFreq);
@@ -447,10 +461,17 @@ export default function App() {
       params: {
         left: { ...prev.params.left, ...preset.left, carrierWaveform: preset.left.carrierWave, modWaveform: preset.left.modWave },
         right: { ...prev.params.right, ...preset.right, carrierWaveform: preset.right.carrierWave, modWaveform: preset.right.modWave },
+      },
+      steps: {
+        left: preset.leftSteps || prev.steps.left,
+        right: preset.rightSteps || prev.steps.right,
       }
     }));
 
     if (engineRef.current) {
+      if (preset.leftSteps) engineRef.current.updateSequencerSteps('left', preset.leftSteps);
+      if (preset.rightSteps) engineRef.current.updateSequencerSteps('right', preset.rightSteps);
+      
       (['left', 'right'] as const).forEach(ch => {
         const p = preset[ch];
         engineRef.current!.setCarrierFrequency(ch, p.carrierFreq);
@@ -956,27 +977,12 @@ export default function App() {
 
           {/* Viz */}
           <div className="lg:col-span-7 flex flex-col gap-4">
-            {/* Simple Meter Integration */}
-            <div className="bg-[#0b1016] border border-[#1e293b] rounded-xl p-4 flex flex-col gap-4">
-               <div className="flex items-center gap-2 text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-[#1e293b] pb-2">
-                 <Zap className="w-3.5 h-3.5" />
-                 Hardware Output Status (Stereo)
-               </div>
-               <div className="grid grid-cols-2 gap-4">
-                  <div className={`p-3 rounded-lg border ${isRunning ? 'bg-cyan-950/20 border-cyan-800' : 'bg-slate-900 border-slate-800'}`}>
-                    <div className="text-[9px] text-slate-500 font-bold mb-1">CH1 (L)</div>
-                    <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
-                      <div className="h-full bg-cyan-500" style={{ width: isRunning ? `${params.left.masterVolume * 100}%` : '0%' }} />
-                    </div>
-                  </div>
-                  <div className={`p-3 rounded-lg border ${isRunning ? 'bg-emerald-950/20 border-emerald-800' : 'bg-slate-900 border-slate-800'}`}>
-                    <div className="text-[9px] text-slate-500 font-bold mb-1">CH2 (R)</div>
-                    <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
-                      <div className="h-full bg-emerald-500" style={{ width: isRunning ? `${params.right.masterVolume * 100}%` : '0%' }} />
-                    </div>
-                  </div>
-               </div>
-            </div>
+            <HardwareDashboard
+              engine={engineRef.current}
+              isRunning={isRunning}
+              onTogglePower={togglePower}
+              params={params}
+            />
 
             <Oscilloscope
               engine={engineRef.current}

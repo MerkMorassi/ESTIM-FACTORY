@@ -52,6 +52,12 @@ export class SignalChain {
   private jitterInterval: number | null = null;
 
   private asymmetricWave: PeriodicWave | null = null;
+  public modOutput: GainNode | null = null;
+  public carrierA: OscillatorNode | null = null;
+  public carrierB: OscillatorNode | null = null;
+
+  private currentImpedance: number = 1000;
+  private sweatInterval: number | null = null;
 
   constructor(ctx: AudioContext, initialParams: SignalParameters, steps: SequencerStep[]) {
     this.ctx = ctx;
@@ -68,6 +74,22 @@ export class SignalChain {
     this.buildGraph();
     this.startWatchdog();
     this.startJitter();
+    this.startSweatDrift();
+  }
+
+  private startSweatDrift(): void {
+    this.sweatInterval = window.setInterval(() => {
+      if (!this.isRunning || !this.params.simulatedSweat) return;
+      
+      // Random walk impedance (500 to 3000 ohms)
+      const drift = (Math.random() - 0.5) * 50;
+      this.currentImpedance = Math.max(500, Math.min(3000, this.currentImpedance + drift));
+      
+      // Affect master volume slightly as impedance changes (higher impedance = lower current)
+      const attenuation = 1000 / this.currentImpedance;
+      const now = this.ctx.currentTime;
+      this.masterGain!.gain.setTargetAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN * attenuation, now, 0.5);
+    }, 1000);
   }
 
   private startJitter(): void {
@@ -119,6 +141,7 @@ export class SignalChain {
     
     // Carrier A
     this.carrierOscA = this.ctx.createOscillator();
+    this.carrierA = this.carrierOscA;
     this.applyWaveform(this.carrierOscA, this.params.carrierWaveform);
     this.carrierOscA.frequency.setValueAtTime(this.params.carrierFreq, now);
     this.carrierGainA = this.ctx.createGain();
@@ -130,6 +153,7 @@ export class SignalChain {
     
     // Carrier B
     this.carrierOscB = this.ctx.createOscillator();
+    this.carrierB = this.carrierOscB;
     this.applyWaveform(this.carrierOscB, this.params.carrierWaveformB);
     this.carrierOscB.frequency.setValueAtTime(this.params.carrierFreq, now);
     this.carrierGainB = this.ctx.createGain();
@@ -143,6 +167,7 @@ export class SignalChain {
     this.applyWaveform(this.modOsc, this.params.modWaveform);
     this.modOsc.frequency.setValueAtTime(this.params.modFreq, now);
     this.modGain = this.ctx.createGain();
+    this.modOutput = this.modGain;
     this.modGain.gain.setValueAtTime(this.params.modDepth * 0.5, now);
     this.modOffset = this.ctx.createConstantSource();
     this.modOffset.offset.setValueAtTime(1.0 - (this.params.modDepth * 0.5), now);
@@ -298,6 +323,9 @@ export class SignalChain {
   public setJitterAmount(amount: number): void {
     this.params.jitterAmount = amount;
   }
+  public setSimulatedSweat(enabled: boolean): void {
+    this.params.simulatedSweat = enabled;
+  }
   public setCarrierMorph(morph: number): void {
     this.params.carrierMorph = morph;
     const now = this.ctx.currentTime;
@@ -349,7 +377,8 @@ export class SignalChain {
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
     this.masterGain!.gain.cancelScheduledValues(now);
-    this.masterGain!.gain.linearRampToValueAtTime(vol * SAFETY_CEILING_GAIN, now + POP_FREE_RAMP_SEC);
+    const attenuation = 1000 / this.currentImpedance;
+    this.masterGain!.gain.linearRampToValueAtTime(vol * SAFETY_CEILING_GAIN * attenuation, now + POP_FREE_RAMP_SEC);
   }
   public setMode(mode: ModulationMode): void { this.params.mode = mode; if (this.isRunning) { if (mode === 'sequenced' || mode === 'burst' || mode === 'sweep') this.startClock(); else this.stopClock(); } }
   public setDutyCycle(duty: number): void { this.params.dutyCycle = duty; }
@@ -476,9 +505,43 @@ export class SignalChain {
     return { peak: Math.min(1.0, peak / SAFETY_CEILING_GAIN), rms: Math.min(1.0, rms / (SAFETY_CEILING_GAIN * 0.707)) };
   }
 
+  public getRecruitment(): { aBeta: number; aDelta: number; cFiber: number } {
+    if (!this.isRunning) return { aBeta: 0, aDelta: 0, cFiber: 0 };
+    const freq = this.params.modFreq;
+    const intensity = this.params.masterVolume;
+    
+    let aBeta = 0, aDelta = 0, cFiber = 0;
+    
+    // A-beta: 80-150Hz modulation
+    if (freq >= 60 && freq <= 180) {
+      aBeta = intensity * (1 - Math.abs(freq - 100) / 80);
+    } else if (freq > 180) {
+      aBeta = intensity * 0.2;
+    }
+    
+    // A-delta: 2-30Hz modulation
+    if (freq >= 1 && freq <= 40) {
+      aDelta = intensity * (1 - Math.abs(freq - 10) / 30);
+    }
+    
+    // C-fiber: Very high intensity or specific patterns (e.g. very low freq)
+    if (intensity > 0.8 || freq < 1) {
+      cFiber = intensity > 0.8 ? (intensity - 0.8) * 5 : intensity * 0.5;
+    }
+    
+    return { 
+      aBeta: Math.max(0, Math.min(1, aBeta)), 
+      aDelta: Math.max(0, Math.min(1, aDelta)), 
+      cFiber: Math.max(0, Math.min(1, cFiber)) 
+    };
+  }
+
+  public getCurrentImpedance(): number { return this.currentImpedance; }
+
   public destroy(): void { 
     if (this.watchdogInterval) clearInterval(this.watchdogInterval);
     if (this.jitterInterval) clearInterval(this.jitterInterval);
+    if (this.sweatInterval) clearInterval(this.sweatInterval);
     this.stop(); 
     this.carrierOscA?.stop(); 
     this.carrierOscB?.stop(); 
@@ -494,6 +557,8 @@ export class SignalEngine {
   private chains: { left: SignalChain; right: SignalChain } | null = null;
   private params: { left: SignalParameters; right: SignalParameters };
   private steps: { left: SequencerStep[]; right: SequencerStep[] };
+  
+  private crossFMConnection: GainNode | null = null;
 
   constructor(params: { left: SignalParameters; right: SignalParameters }, steps: { left: SequencerStep[]; right: SequencerStep[] }) {
     this.params = { left: { ...params.left }, right: { ...params.right } };
@@ -507,9 +572,18 @@ export class SignalEngine {
     this.ctx = new AudioCtx({ latencyHint: 'interactive' });
     const merger = this.ctx.createChannelMerger(2);
     this.chains = { left: new SignalChain(this.ctx, this.params.left, this.steps.left), right: new SignalChain(this.ctx, this.params.right, this.steps.right) };
+    
     this.chains.left.output.connect(merger, 0, 0);
     this.chains.right.output.connect(merger, 0, 1);
     merger.connect(this.ctx.destination);
+
+    // Prepare Cross-FM connection point
+    this.crossFMConnection = this.ctx.createGain();
+    this.crossFMConnection.gain.setValueAtTime(0, this.ctx.currentTime);
+    this.chains.left.modOutput!.connect(this.crossFMConnection);
+    this.crossFMConnection.connect(this.chains.right.carrierA!.frequency);
+    this.crossFMConnection.connect(this.chains.right.carrierB!.frequency);
+
     return true;
   }
 
@@ -539,7 +613,28 @@ export class SignalEngine {
   public setLoopRange(ch: 'left' | 'right', start: number, end: number): void { this.params[ch].seqLoopStart = start; this.params[ch].seqLoopEnd = end; this.chains?.[ch].setLoopRange(start, end); }
   public updateSequencerSteps(ch: 'left' | 'right', s: SequencerStep[]): void { this.steps[ch] = [...s]; this.chains?.[ch].updateSequencerSteps(s); }
   public setOnStepCallback(ch: 'left' | 'right', cb: StepCallback | null): void { this.chains?.[ch].setOnStepCallback(cb); }
+  
+  public setCrossChannelFM(enabled: boolean): void {
+    this.params.left.crossChannelFM = enabled;
+    this.params.right.crossChannelFM = enabled;
+    if (!this.crossFMConnection || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    // Connect Ch1 Modulator to Ch2 Carrier Frequency
+    // Amount: +/- 200Hz frequency shift
+    this.crossFMConnection.gain.linearRampToValueAtTime(enabled ? 200 : 0, now + POP_FREE_RAMP_SEC);
+  }
+
+  public setSimulatedSweat(enabled: boolean): void {
+    this.params.left.simulatedSweat = enabled;
+    this.params.right.simulatedSweat = enabled;
+    this.chains?.left.setSimulatedSweat(enabled);
+    this.chains?.right.setSimulatedSweat(enabled);
+  }
+
   public getLevels(ch: 'left' | 'right'): { peak: number; rms: number } { return this.chains?.[ch].getLevels() || { peak: 0, rms: 0 }; }
+  public getRecruitment(ch: 'left' | 'right'): { aBeta: number; aDelta: number; cFiber: number } { return this.chains?.[ch].getRecruitment() || { aBeta: 0, aDelta: 0, cFiber: 0 }; }
+  public getCurrentImpedance(ch: 'left' | 'right'): number { return this.chains?.[ch].getCurrentImpedance() || 1000; }
+  
   public getOutputWaveform(ch: 'left' | 'right', b: Float32Array): void { this.chains?.[ch].getOutputWaveform(b); }
   public getOutputFrequency(ch: 'left' | 'right', b: Float32Array): void { this.chains?.[ch].getOutputFrequency(b); }
   public getEnvelopeWaveform(ch: 'left' | 'right', b: Float32Array): void { this.chains?.[ch].getEnvelopeWaveform(b); }
@@ -557,3 +652,4 @@ export class SignalEngine {
   }
   public destroy(): void { this.chains?.left.destroy(); this.chains?.right.destroy(); this.ctx?.close(); }
 }
+

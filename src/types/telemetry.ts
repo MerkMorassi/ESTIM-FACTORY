@@ -50,6 +50,10 @@ export interface SignalParameters {
 
   // Performance Macro
   performanceMacro: number; // 0 to 1
+
+  // Cross-Channel & Environment
+  crossChannelFM: boolean;
+  simulatedSweat: boolean;
 }
 
 export interface ImpedanceModel {
@@ -91,6 +95,7 @@ export interface TelemetryPreset {
   dutyCycle: number;
   burstDurationMs: number;
   targetImpedanceOhms: number;
+  steps?: SequencerStep[];
 }
 
 export interface DualChannelPreset {
@@ -99,6 +104,8 @@ export interface DualChannelPreset {
   description: string;
   left: Omit<TelemetryPreset, 'id' | 'name' | 'description'>;
   right: Omit<TelemetryPreset, 'id' | 'name' | 'description'>;
+  leftSteps?: SequencerStep[];
+  rightSteps?: SequencerStep[];
 }
 
 export type InterpolationType = 'linear' | 'exponential' | 'step';
