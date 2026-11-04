@@ -189,9 +189,10 @@ export class SignalChain {
     this.phaseDelay.connect(this.sequencerGain);
     this.sequencerGain.connect(this.vcaGain);
     
+    // STRICT LINEAR ROUTING: vca -> master -> mute -> watchdog -> analyser -> output
     this.vcaGain.connect(this.masterGain);
     this.masterGain.connect(this.muteGain);
-    this.masterGain.connect(this.watchdogGain);
+    this.muteGain.connect(this.watchdogGain);
     this.watchdogGain.connect(this.analyser);
     this.analyser.connect(this.output);
     
@@ -228,6 +229,7 @@ export class SignalChain {
     if (!this.watchdogGain) return;
     const now = this.ctx.currentTime;
     this.watchdogGain.gain.cancelScheduledValues(now);
+    this.watchdogGain.gain.setValueAtTime(this.watchdogGain.gain.value, now);
     this.watchdogGain.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
     this.stopClock();
     this.isRunning = false;
@@ -262,28 +264,107 @@ export class SignalChain {
     this.phaseDelay!.delayTime.cancelScheduledValues(now);
   }
 
+  /**
+   * Resets every audio node and parameter strictly to this.params values.
+   * Cancels all scheduled values, clears clocks, and anchors all AudioParams.
+   */
+  public resetToParams(params?: SignalParameters): void {
+    if (params) {
+      this.params = { ...params };
+    }
+    this.stopClock();
+    this.cancelAutomation();
+    const now = this.ctx.currentTime;
+
+    if (this.carrierOscA && this.carrierOscB) {
+      this.carrierOscA.frequency.setValueAtTime(this.params.carrierFreq, now);
+      this.carrierOscB.frequency.setValueAtTime(this.params.carrierFreq, now);
+      this.applyWaveform(this.carrierOscA, this.params.carrierWaveform);
+      this.applyWaveform(this.carrierOscB, this.params.carrierWaveformB);
+    }
+
+    if (this.carrierGainA && this.carrierGainB) {
+      const rmsA = getRMSFactor(this.params.carrierWaveform);
+      const rmsB = getRMSFactor(this.params.carrierWaveformB);
+      this.carrierGainA.gain.setValueAtTime((1.0 - this.params.carrierMorph) * rmsA, now);
+      this.carrierGainB.gain.setValueAtTime(this.params.carrierMorph * rmsB, now);
+    }
+
+    if (this.phaseDelay) {
+      const delay = (this.params.carrierPhase / 360) * (1 / Math.max(1, this.params.carrierFreq));
+      this.phaseDelay.delayTime.setValueAtTime(delay, now);
+    }
+
+    if (this.modOsc) {
+      this.modOsc.frequency.setValueAtTime(this.params.modFreq, now);
+      this.applyWaveform(this.modOsc, this.params.modWaveform);
+    }
+
+    if (this.modGain && this.modOffset) {
+      this.modGain.gain.setValueAtTime(this.params.modDepth * 0.5, now);
+      this.modOffset.offset.setValueAtTime(1.0 - (this.params.modDepth * 0.5), now);
+    }
+
+    if (this.sequencerGain) {
+      this.sequencerGain.gain.setValueAtTime(this.params.mode === 'sequenced' ? 0.0001 : 1.0, now);
+    }
+
+    if (this.muteGain) {
+      this.muteGain.gain.setValueAtTime(this.isMuted ? 0.0001 : 1.0, now);
+    }
+
+    if (this.masterGain && this.watchdogGain) {
+      if (!this.isRunning) {
+        this.masterGain.gain.setValueAtTime(0.0001, now);
+        this.watchdogGain.gain.setValueAtTime(0.0001, now);
+      } else {
+        const attenuation = 1000 / this.currentImpedance;
+        this.masterGain.gain.setValueAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN * attenuation, now);
+        this.watchdogGain.gain.setValueAtTime(1.0, now);
+        if (this.params.mode === 'sequenced' || this.params.mode === 'burst' || this.params.mode === 'sweep') {
+          this.startClock();
+        }
+      }
+    }
+  }
+
   public start(): void {
+    this.resetToParams();
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
-    this.cancelAutomation();
-    
-    // Cold Start Safety: 2 second ramp
+
+    // Cold Start Safety: 2 second ramp from silence (0.0001) to 1.0
+    this.watchdogGain!.gain.setValueAtTime(0.0001, now);
     this.watchdogGain!.gain.linearRampToValueAtTime(1.0, now + COLD_START_RAMP_SEC);
-    this.masterGain!.gain.linearRampToValueAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN, now + POP_FREE_RAMP_SEC);
-    this.muteGain!.gain.linearRampToValueAtTime(this.isMuted ? 0.0001 : 1.0, now + POP_FREE_RAMP_SEC);
-    
+
+    const attenuation = 1000 / this.currentImpedance;
+    this.masterGain!.gain.setValueAtTime(0.0001, now);
+    this.masterGain!.gain.linearRampToValueAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN * attenuation, now + POP_FREE_RAMP_SEC);
+
+    this.muteGain!.gain.setValueAtTime(this.isMuted ? 0.0001 : 1.0, now);
+
     this.isRunning = true;
     this.lastHeartbeat = Date.now();
-    if (this.params.mode === 'sequenced' || this.params.mode === 'burst' || this.params.mode === 'sweep') this.startClock();
+    if (this.params.mode === 'sequenced' || this.params.mode === 'burst' || this.params.mode === 'sweep') {
+      this.startClock();
+    }
   }
 
   public stop(): void {
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
     this.cancelAutomation();
-    this.watchdogGain!.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
-    this.masterGain!.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
     this.stopClock();
+
+    const currentWatchdog = this.watchdogGain ? this.watchdogGain.gain.value : 1.0;
+    const currentMaster = this.masterGain ? this.masterGain.gain.value : 0.5;
+
+    this.watchdogGain!.gain.setValueAtTime(currentWatchdog, now);
+    this.watchdogGain!.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
+
+    this.masterGain!.gain.setValueAtTime(currentMaster, now);
+    this.masterGain!.gain.linearRampToValueAtTime(0.0001, now + POP_FREE_RAMP_SEC);
+
     this.isRunning = false;
   }
 
@@ -292,6 +373,7 @@ export class SignalChain {
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
     this.muteGain!.gain.cancelScheduledValues(now);
+    this.muteGain!.gain.setValueAtTime(this.muteGain!.gain.value, now);
     this.muteGain!.gain.linearRampToValueAtTime(muted ? 0.0001 : 1.0, now + POP_FREE_RAMP_SEC);
   }
 
@@ -300,12 +382,16 @@ export class SignalChain {
     const now = this.ctx.currentTime;
     this.trackTransition('frequency');
     this.carrierOscA!.frequency.cancelScheduledValues(now);
+    this.carrierOscA!.frequency.setValueAtTime(this.carrierOscA!.frequency.value, now);
     this.carrierOscA!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
+    
     this.carrierOscB!.frequency.cancelScheduledValues(now);
+    this.carrierOscB!.frequency.setValueAtTime(this.carrierOscB!.frequency.value, now);
     this.carrierOscB!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
     
     // Maintain phase shift delay
     this.phaseDelay!.delayTime.cancelScheduledValues(now);
+    this.phaseDelay!.delayTime.setValueAtTime(this.phaseDelay!.delayTime.value, now);
     const delay = (this.params.carrierPhase / 360) * (1 / Math.max(1, freq));
     this.phaseDelay!.delayTime.linearRampToValueAtTime(delay, now + POP_FREE_RAMP_SEC);
   }
@@ -315,17 +401,21 @@ export class SignalChain {
     this.applyWaveform(this.carrierOscA!, wave);
     this.setCarrierMorph(this.params.carrierMorph); // Recalculate RMS
   }
+  
   public setCarrierWaveformB(wave: WaveformType): void { 
     this.params.carrierWaveformB = wave; 
     this.applyWaveform(this.carrierOscB!, wave);
     this.setCarrierMorph(this.params.carrierMorph); // Recalculate RMS
   }
+  
   public setJitterAmount(amount: number): void {
     this.params.jitterAmount = amount;
   }
+  
   public setSimulatedSweat(enabled: boolean): void {
     this.params.simulatedSweat = enabled;
   }
+  
   public setCarrierMorph(morph: number): void {
     this.params.carrierMorph = morph;
     const now = this.ctx.currentTime;
@@ -335,52 +425,79 @@ export class SignalChain {
     const rmsA = getRMSFactor(this.params.carrierWaveform);
     const targetA = (1.0 - morph) * rmsA;
     this.carrierGainA!.gain.cancelScheduledValues(now);
+    this.carrierGainA!.gain.setValueAtTime(this.carrierGainA!.gain.value, now);
     this.carrierGainA!.gain.linearRampToValueAtTime(targetA, now + POP_FREE_RAMP_SEC);
     
     // RMS Normalized Gain B
     const rmsB = getRMSFactor(this.params.carrierWaveformB);
     const targetB = morph * rmsB;
     this.carrierGainB!.gain.cancelScheduledValues(now);
+    this.carrierGainB!.gain.setValueAtTime(this.carrierGainB!.gain.value, now);
     this.carrierGainB!.gain.linearRampToValueAtTime(targetB, now + POP_FREE_RAMP_SEC);
   }
+  
   public setCarrierPhase(phase: number): void {
     this.params.carrierPhase = phase;
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude'); 
     this.phaseDelay!.delayTime.cancelScheduledValues(now);
+    this.phaseDelay!.delayTime.setValueAtTime(this.phaseDelay!.delayTime.value, now);
     const delay = (phase / 360) * (1 / Math.max(1, this.params.carrierFreq));
     this.phaseDelay!.delayTime.linearRampToValueAtTime(delay, now + POP_FREE_RAMP_SEC);
   }
+  
   public setModFrequency(freq: number): void {
     this.params.modFreq = freq;
     const now = this.ctx.currentTime;
     this.trackTransition('frequency');
     this.modOsc!.frequency.cancelScheduledValues(now);
+    this.modOsc!.frequency.setValueAtTime(this.modOsc!.frequency.value, now);
     this.modOsc!.frequency.linearRampToValueAtTime(freq, now + POP_FREE_RAMP_SEC);
   }
+  
   public setModWaveform(wave: WaveformType): void { 
     this.params.modWaveform = wave; 
     this.applyWaveform(this.modOsc!, wave);
   }
+  
   public setModDepth(depth: number): void {
     this.params.modDepth = depth;
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
     this.modGain!.gain.cancelScheduledValues(now);
+    this.modGain!.gain.setValueAtTime(this.modGain!.gain.value, now);
     this.modGain!.gain.linearRampToValueAtTime(depth * 0.5, now + POP_FREE_RAMP_SEC);
+    
     this.modOffset!.offset.cancelScheduledValues(now);
+    this.modOffset!.offset.setValueAtTime(this.modOffset!.offset.value, now);
     this.modOffset!.offset.linearRampToValueAtTime(1.0 - (depth * 0.5), now + POP_FREE_RAMP_SEC);
   }
+  
   public setMasterVolume(vol: number): void {
     this.params.masterVolume = vol;
     if (!this.isRunning) return;
     const now = this.ctx.currentTime;
     this.trackTransition('amplitude');
     this.masterGain!.gain.cancelScheduledValues(now);
+    this.masterGain!.gain.setValueAtTime(this.masterGain!.gain.value, now);
     const attenuation = 1000 / this.currentImpedance;
     this.masterGain!.gain.linearRampToValueAtTime(vol * SAFETY_CEILING_GAIN * attenuation, now + POP_FREE_RAMP_SEC);
   }
-  public setMode(mode: ModulationMode): void { this.params.mode = mode; if (this.isRunning) { if (mode === 'sequenced' || mode === 'burst' || mode === 'sweep') this.startClock(); else this.stopClock(); } }
+  
+  public setMode(mode: ModulationMode): void { 
+    this.params.mode = mode; 
+    if (this.isRunning) { 
+      if (mode === 'sequenced' || mode === 'burst' || mode === 'sweep') {
+        this.startClock();
+      } else { 
+        this.stopClock();
+        const now = this.ctx.currentTime;
+        this.sequencerGain!.gain.cancelScheduledValues(now);
+        this.sequencerGain!.gain.linearRampToValueAtTime(1.0, now + POP_FREE_RAMP_SEC);
+      } 
+    } 
+  }
+  
   public setDutyCycle(duty: number): void { this.params.dutyCycle = duty; }
   public setBurstDuration(ms: number): void { this.params.burstDurationMs = ms; }
   public setMasterBpm(bpm: number): void { this.params.masterBpm = bpm; if (this.isRunning && this.params.syncToMaster) this.startClock(); }
@@ -400,6 +517,7 @@ export class SignalChain {
         const step = this.steps[this.currentStepIndex];
         this.trackTransition('amplitude');
         this.sequencerGain!.gain.cancelScheduledValues(now);
+        this.sequencerGain!.gain.setValueAtTime(this.sequencerGain!.gain.value, now);
         this.sequencerGain!.gain.linearRampToValueAtTime(step.active ? step.amplitude : 0.0001, now + POP_FREE_RAMP_SEC);
         if (this.onStepCallback) this.onStepCallback(this.currentStepIndex);
         
@@ -432,7 +550,12 @@ export class SignalChain {
     tick();
   }
 
-  private stopClock(): void { if (this.seqTimerId !== null) { clearTimeout(this.seqTimerId); this.seqTimerId = null; } }
+  private stopClock(): void { 
+    if (this.seqTimerId !== null) { 
+      clearTimeout(this.seqTimerId); 
+      this.seqTimerId = null; 
+    } 
+  }
 
   public scheduleSegment(seg: ProtocolSegment, startTime: number, masterBpm?: number): void {
     const endTime = startTime + seg.durationSec;
@@ -491,6 +614,7 @@ export class SignalChain {
   public getOutputWaveform(buffer: Float32Array): void { this.analyser?.getFloatTimeDomainData(buffer as unknown as Float32Array<ArrayBuffer>); }
   public getOutputFrequency(buffer: Float32Array): void { this.analyser?.getFloatFrequencyData(buffer as unknown as Float32Array<ArrayBuffer>); }
   public getEnvelopeWaveform(buffer: Float32Array): void { this.envAnalyser?.getFloatTimeDomainData(buffer as unknown as Float32Array<ArrayBuffer>); }
+  
   public getLevels(): { peak: number; rms: number } {
     if (!this.analyser || !this.isRunning) return { peak: 0, rms: 0 };
     const buffer = new Float32Array(this.analyser.fftSize);
@@ -542,10 +666,29 @@ export class SignalChain {
     if (this.watchdogInterval) clearInterval(this.watchdogInterval);
     if (this.jitterInterval) clearInterval(this.jitterInterval);
     if (this.sweatInterval) clearInterval(this.sweatInterval);
+    this.stopClock();
     this.stop(); 
-    this.carrierOscA?.stop(); 
-    this.carrierOscB?.stop(); 
-    this.modOsc?.stop(); 
+    
+    try { this.carrierOscA?.stop(); } catch (e) {}
+    try { this.carrierOscB?.stop(); } catch (e) {}
+    try { this.modOsc?.stop(); } catch (e) {}
+    try { this.modOffset?.stop(); } catch (e) {}
+    
+    this.carrierOscA?.disconnect();
+    this.carrierOscB?.disconnect();
+    this.carrierGainA?.disconnect();
+    this.carrierGainB?.disconnect();
+    this.phaseDelay?.disconnect();
+    this.sequencerGain?.disconnect();
+    this.vcaGain?.disconnect();
+    this.modOsc?.disconnect();
+    this.modGain?.disconnect();
+    this.modOffset?.disconnect();
+    this.masterGain?.disconnect();
+    this.muteGain?.disconnect();
+    this.watchdogGain?.disconnect();
+    this.analyser?.disconnect();
+    this.envAnalyser?.disconnect();
     this.input.disconnect(); 
     this.output.disconnect(); 
   }
@@ -553,10 +696,12 @@ export class SignalChain {
 
 export class SignalEngine {
   private ctx: AudioContext | null = null;
+  private merger: ChannelMergerNode | null = null;
   private isRunning: boolean = false;
   private chains: { left: SignalChain; right: SignalChain } | null = null;
   private params: { left: SignalParameters; right: SignalParameters };
   private steps: { left: SequencerStep[]; right: SequencerStep[] };
+  private onStepCallbacks: { left: StepCallback | null; right: StepCallback | null } = { left: null, right: null };
   
   private crossFMConnection: GainNode | null = null;
 
@@ -570,21 +715,88 @@ export class SignalEngine {
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return false;
     this.ctx = new AudioCtx({ latencyHint: 'interactive' });
-    const merger = this.ctx.createChannelMerger(2);
-    this.chains = { left: new SignalChain(this.ctx, this.params.left, this.steps.left), right: new SignalChain(this.ctx, this.params.right, this.steps.right) };
+    this.merger = this.ctx.createChannelMerger(2);
+    this.merger.connect(this.ctx.destination);
     
-    this.chains.left.output.connect(merger, 0, 0);
-    this.chains.right.output.connect(merger, 0, 1);
-    merger.connect(this.ctx.destination);
+    await this.mountPatch(this.params, this.steps, false);
+    return true;
+  }
 
-    // Prepare Cross-FM connection point
-    this.crossFMConnection = this.ctx.createGain();
-    this.crossFMConnection.gain.setValueAtTime(0, this.ctx.currentTime);
+  /**
+   * Completely unmounts and silences any current audio nodes, oscillators,
+   * intervals, and scheduled automations. Enforces: ONE PATCH AT A TIME.
+   */
+  public unmountCurrentPatch(): void {
+    if (this.chains) {
+      this.chains.left.destroy();
+      this.chains.right.destroy();
+      this.chains = null;
+    }
+    if (this.crossFMConnection) {
+      try { this.crossFMConnection.disconnect(); } catch (e) {}
+      this.crossFMConnection = null;
+    }
+    this.isRunning = false;
+  }
+
+  /**
+   * Unmounts the previous patch and mounts a fresh, pristine signal chain.
+   */
+  public async mountPatch(
+    params?: { left: SignalParameters; right: SignalParameters }, 
+    steps?: { left: SequencerStep[]; right: SequencerStep[] }, 
+    startImmediately: boolean = false
+  ): Promise<void> {
+    if (!this.ctx || this.ctx.state === 'closed') {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      this.ctx = new AudioCtx({ latencyHint: 'interactive' });
+      this.merger = this.ctx.createChannelMerger(2);
+      this.merger.connect(this.ctx.destination);
+    } else {
+      if (this.ctx.state === 'suspended') {
+        await this.ctx.resume();
+      }
+      this.unmountCurrentPatch();
+    }
+
+    if (params) {
+      this.params = { left: { ...params.left }, right: { ...params.right } };
+    }
+    if (steps) {
+      this.steps = { left: [...steps.left], right: [...steps.right] };
+    }
+
+    if (!this.merger && this.ctx) {
+      this.merger = this.ctx.createChannelMerger(2);
+      this.merger.connect(this.ctx.destination);
+    }
+
+    this.chains = { 
+      left: new SignalChain(this.ctx!, this.params.left, this.steps.left), 
+      right: new SignalChain(this.ctx!, this.params.right, this.steps.right) 
+    };
+    
+    this.chains.left.output.connect(this.merger!, 0, 0);
+    this.chains.right.output.connect(this.merger!, 0, 1);
+
+    if (this.onStepCallbacks.left) this.chains.left.setOnStepCallback(this.onStepCallbacks.left);
+    if (this.onStepCallbacks.right) this.chains.right.setOnStepCallback(this.onStepCallbacks.right);
+
+    // Cross-FM connection
+    this.crossFMConnection = this.ctx!.createGain();
+    const now = this.ctx!.currentTime;
+    const fmGain = (this.params.left.crossChannelFM || this.params.right.crossChannelFM) ? 200 : 0;
+    this.crossFMConnection.gain.setValueAtTime(fmGain, now);
     this.chains.left.modOutput!.connect(this.crossFMConnection);
     this.crossFMConnection.connect(this.chains.right.carrierA!.frequency);
     this.crossFMConnection.connect(this.chains.right.carrierB!.frequency);
 
-    return true;
+    if (startImmediately) {
+      this.chains.left.start();
+      this.chains.right.start();
+      this.isRunning = true;
+    }
   }
 
   public heartbeat(): void {
@@ -592,8 +804,24 @@ export class SignalEngine {
     this.chains?.right.heartbeat();
   }
 
-  public async start(): Promise<void> { if (!this.ctx) await this.initAudio(); this.chains?.left.start(); this.chains?.right.start(); this.isRunning = true; }
-  public stop(): void { this.chains?.left.stop(); this.chains?.right.stop(); this.isRunning = false; }
+  public async start(): Promise<void> { 
+    if (!this.ctx || !this.chains) {
+      await this.initAudio();
+    }
+    if (this.ctx?.state === 'suspended') {
+      await this.ctx.resume();
+    }
+    this.chains?.left.start(); 
+    this.chains?.right.start(); 
+    this.isRunning = true; 
+  }
+  
+  public stop(): void { 
+    this.chains?.left.stop(); 
+    this.chains?.right.stop(); 
+    this.isRunning = false; 
+  }
+  
   public setMute(ch: 'left' | 'right', muted: boolean): void { this.chains?.[ch].setMute(muted); }
   public setCarrierFrequency(ch: 'left' | 'right', f: number): void { this.params[ch].carrierFreq = f; this.chains?.[ch].setCarrierFrequency(f); }
   public setCarrierWaveform(ch: 'left' | 'right', w: WaveformType): void { this.params[ch].carrierWaveform = w; this.chains?.[ch].setCarrierWaveform(w); }
@@ -611,8 +839,16 @@ export class SignalEngine {
   public setMasterBpm(bpm: number): void { this.params.left.masterBpm = bpm; this.params.right.masterBpm = bpm; this.chains?.left.setMasterBpm(bpm); this.chains?.right.setMasterBpm(bpm); }
   public setSyncToMaster(ch: 'left' | 'right', s: boolean): void { this.params[ch].syncToMaster = s; this.chains?.[ch].setSyncToMaster(s); }
   public setLoopRange(ch: 'left' | 'right', start: number, end: number): void { this.params[ch].seqLoopStart = start; this.params[ch].seqLoopEnd = end; this.chains?.[ch].setLoopRange(start, end); }
-  public updateSequencerSteps(ch: 'left' | 'right', s: SequencerStep[]): void { this.steps[ch] = [...s]; this.chains?.[ch].updateSequencerSteps(s); }
-  public setOnStepCallback(ch: 'left' | 'right', cb: StepCallback | null): void { this.chains?.[ch].setOnStepCallback(cb); }
+  
+  public updateSequencerSteps(ch: 'left' | 'right', s: SequencerStep[]): void { 
+    this.steps[ch] = [...s]; 
+    this.chains?.[ch].updateSequencerSteps(s); 
+  }
+  
+  public setOnStepCallback(ch: 'left' | 'right', cb: StepCallback | null): void { 
+    this.onStepCallbacks[ch] = cb;
+    this.chains?.[ch].setOnStepCallback(cb); 
+  }
   
   public setCrossChannelFM(enabled: boolean): void {
     this.params.left.crossChannelFM = enabled;
@@ -640,16 +876,33 @@ export class SignalEngine {
   public getEnvelopeWaveform(ch: 'left' | 'right', b: Float32Array): void { this.chains?.[ch].getEnvelopeWaveform(b); }
   public getTransitionProgress(ch: 'left' | 'right'): { progress: number; type: 'none' | 'amplitude' | 'frequency' } { return this.chains?.[ch].getTransitionProgress() || { progress: 0, type: 'none' }; }
   public getIsRunning(): boolean { return this.isRunning; }
+
+  /**
+   * Schedules a multi-segment timeline protocol. Unmounts previous audio graph,
+   * creates clean chains, and schedules segments strictly.
+   */
   public async scheduleProtocol(p: StimulationProtocol): Promise<void> {
-    if (!this.ctx) await this.initAudio();
-    this.stop();
-    const now = this.ctx!.currentTime;
+    await this.mountPatch(undefined, undefined, false);
+    if (!this.ctx || !this.chains) return;
+    const now = this.ctx.currentTime;
+    
+    // Warm up the chains with volume open
+    this.chains.left.start();
+    this.chains.right.start();
+    
     (['left', 'right'] as const).forEach(ch => {
       let time = now;
-      p.channels[ch].forEach(seg => { this.chains?.[ch].scheduleSegment(seg, time, p.masterBpm); time += seg.durationSec; });
+      p.channels[ch].forEach(seg => { 
+        this.chains?.[ch].scheduleSegment(seg, time, p.masterBpm); 
+        time += seg.durationSec; 
+      });
     });
     this.isRunning = true;
   }
-  public destroy(): void { this.chains?.left.destroy(); this.chains?.right.destroy(); this.ctx?.close(); }
-}
 
+  public destroy(): void { 
+    this.unmountCurrentPatch();
+    this.merger?.disconnect();
+    this.ctx?.close(); 
+  }
+}

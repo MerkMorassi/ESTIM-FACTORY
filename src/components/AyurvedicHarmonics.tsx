@@ -25,7 +25,15 @@ const INITIAL_HARMONIC_PARAMS: HarmonicParams = {
   adsr: INITIAL_ADSR,
 };
 
-export const AyurvedicHarmonics: React.FC = () => {
+interface AyurvedicHarmonicsProps {
+  onDroneToggle?: (active: boolean) => void;
+  externalStopTrigger?: number;
+}
+
+export const AyurvedicHarmonics: React.FC<AyurvedicHarmonicsProps> = ({
+  onDroneToggle,
+  externalStopTrigger,
+}) => {
   const [params, setParams] = useState<HarmonicParams>(INITIAL_HARMONIC_PARAMS);
   const [isActive, setIsActive] = useState<boolean>(false);
   const engineRef = useRef<HarmonicEngine | null>(null);
@@ -37,16 +45,25 @@ export const AyurvedicHarmonics: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (externalStopTrigger && isActive && engineRef.current) {
+      engineRef.current.triggerRelease();
+      setIsActive(false);
+    }
+  }, [externalStopTrigger]);
+
   const handleToggle = async () => {
     if (!engineRef.current) return;
     
     if (isActive) {
       engineRef.current.triggerRelease();
       setIsActive(false);
+      onDroneToggle?.(false);
     } else {
       await engineRef.current.init();
       engineRef.current.triggerAttack();
       setIsActive(true);
+      onDroneToggle?.(true);
     }
   };
 

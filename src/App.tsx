@@ -136,6 +136,7 @@ export default function App() {
   const [activeChannel, setActiveChannel] = useState<'left' | 'right'>('left');
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(false);
+  const [externalStopTrigger, setExternalStopTrigger] = useState<number>(0);
   const [currentStep, setCurrentStep] = useState<{ left: number; right: number }>({ left: 0, right: 0 });
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'profiler' | 'sequencer' | 'spectrum' | 'standalone_module' | 'ayurvedic' | 'composer' | 'player' | 'midi' | 'ai' | 'settings'>('player');
@@ -260,8 +261,10 @@ export default function App() {
     if (isRunning) {
       engineRef.current.stop();
       setIsRunning(false);
+      setExternalStopTrigger(Date.now());
     } else {
-      await engineRef.current.start();
+      setExternalStopTrigger(Date.now());
+      await engineRef.current.mountPatch(params, steps, true);
       setIsRunning(true);
     }
   };
@@ -408,86 +411,131 @@ export default function App() {
   };
 
   const handleSelectPreset = (preset: TelemetryPreset) => {
-    if (engineRef.current) {
-      engineRef.current.stop();
-    }
     setActivePresetId(preset.id);
-    const channel = activeChannel;
-    const updated = {
-      ...params[channel],
-      carrierFreq: preset.carrierFreq,
-      carrierWaveform: preset.carrierWave,
-      modFreq: preset.modFreq,
-      modWaveform: preset.modWave,
-      modDepth: preset.modDepth,
-      mode: preset.mode,
-      dutyCycle: preset.dutyCycle,
-      burstDurationMs: preset.burstDurationMs,
-    };
+    const wasRunning = isRunning;
     
+    // Stop any other sound generators (drone, timeline preview, etc.)
+    setExternalStopTrigger(Date.now());
+    
+    let leftParams: SignalParameters;
+    let rightParams: SignalParameters;
+    
+    if (preset.id === 'phase-swirl') {
+      leftParams = {
+        ...params.left,
+        carrierFreq: preset.carrierFreq,
+        carrierWaveform: preset.carrierWave,
+        modFreq: preset.modFreq,
+        modWaveform: preset.modWave,
+        modDepth: preset.modDepth,
+        mode: preset.mode,
+        dutyCycle: preset.dutyCycle,
+        burstDurationMs: preset.burstDurationMs,
+        carrierPhase: 0,
+      };
+      rightParams = {
+        ...params.right,
+        carrierFreq: preset.carrierFreq,
+        carrierWaveform: preset.carrierWave,
+        modFreq: preset.modFreq,
+        modWaveform: preset.modWave,
+        modDepth: preset.modDepth,
+        mode: preset.mode,
+        dutyCycle: preset.dutyCycle,
+        burstDurationMs: preset.burstDurationMs,
+        carrierPhase: 180, // Spatial movement between electrodes
+      };
+    } else if (preset.id === 'binaural-tissue-beat') {
+      leftParams = {
+        ...params.left,
+        carrierFreq: 100,
+        carrierWaveform: preset.carrierWave,
+        modFreq: preset.modFreq,
+        modWaveform: preset.modWave,
+        modDepth: preset.modDepth,
+        mode: preset.mode,
+        dutyCycle: preset.dutyCycle,
+        burstDurationMs: preset.burstDurationMs,
+      };
+      rightParams = {
+        ...params.right,
+        carrierFreq: 102, // 2Hz binaural tissue beat
+        carrierWaveform: preset.carrierWave,
+        modFreq: preset.modFreq,
+        modWaveform: preset.modWave,
+        modDepth: preset.modDepth,
+        mode: preset.mode,
+        dutyCycle: preset.dutyCycle,
+        burstDurationMs: preset.burstDurationMs,
+      };
+    } else {
+      // Clean patch applied to both channels so no stale unconfigured channel plays
+      leftParams = {
+        ...params.left,
+        carrierFreq: preset.carrierFreq,
+        carrierWaveform: preset.carrierWave,
+        modFreq: preset.modFreq,
+        modWaveform: preset.modWave,
+        modDepth: preset.modDepth,
+        mode: preset.mode,
+        dutyCycle: preset.dutyCycle,
+        burstDurationMs: preset.burstDurationMs,
+      };
+      rightParams = {
+        ...params.right,
+        carrierFreq: preset.carrierFreq,
+        carrierWaveform: preset.carrierWave,
+        modFreq: preset.modFreq,
+        modWaveform: preset.modWave,
+        modDepth: preset.modDepth,
+        mode: preset.mode,
+        dutyCycle: preset.dutyCycle,
+        burstDurationMs: preset.burstDurationMs,
+      };
+    }
+
+    const nextSteps = preset.steps ? {
+      left: preset.steps.map(s => ({ ...s })),
+      right: preset.steps.map(s => ({ ...s })),
+    } : steps;
+
+    const nextParams = { left: leftParams, right: rightParams };
+
     setAppState(prev => ({
       ...prev,
-      params: { ...prev.params, [channel]: updated },
-      steps: preset.steps ? { ...prev.steps, [channel]: preset.steps } : prev.steps
+      params: nextParams,
+      steps: nextSteps,
     }));
-    
-    if (engineRef.current) {
-      if (preset.steps) {
-        engineRef.current.updateSequencerSteps(channel, preset.steps);
-      }
-      engineRef.current.setCarrierFrequency(channel, preset.carrierFreq);
-      engineRef.current.setCarrierWaveform(channel, preset.carrierWave);
-      engineRef.current.setModFrequency(channel, preset.modFreq);
-      engineRef.current.setModWaveform(channel, preset.modWave);
-      engineRef.current.setModDepth(channel, preset.modDepth);
-      engineRef.current.setMode(channel, preset.mode);
-      engineRef.current.setBurstDuration(channel, preset.burstDurationMs);
-      engineRef.current.setDutyCycle(channel, preset.dutyCycle);
-      
-      // If we were running, restart with new parameters
-      if (isRunning) {
-        engineRef.current.start();
-      }
-    }
+
+    // UNMOUNT PREVIOUS, MOUNT NEW: Exactly ONE patch at a time!
+    engineRef.current?.mountPatch(nextParams, nextSteps, wasRunning);
   };
 
   const handleSelectDualPreset = (preset: DualChannelPreset) => {
-    if (engineRef.current) {
-      engineRef.current.stop();
-    }
     setActivePresetId(preset.id);
+    const wasRunning = isRunning;
+    
+    // Stop any other sound generators
+    setExternalStopTrigger(Date.now());
+    
+    const nextParams = {
+      left: { ...params.left, ...preset.left, carrierWaveform: preset.left.carrierWave, modWaveform: preset.left.modWave },
+      right: { ...params.right, ...preset.right, carrierWaveform: preset.right.carrierWave, modWaveform: preset.right.modWave },
+    };
+
+    const nextSteps = {
+      left: preset.leftSteps ? preset.leftSteps.map(s => ({ ...s })) : steps.left,
+      right: preset.rightSteps ? preset.rightSteps.map(s => ({ ...s })) : steps.right,
+    };
+
     setAppState(prev => ({
       ...prev,
-      params: {
-        left: { ...prev.params.left, ...preset.left, carrierWaveform: preset.left.carrierWave, modWaveform: preset.left.modWave },
-        right: { ...prev.params.right, ...preset.right, carrierWaveform: preset.right.carrierWave, modWaveform: preset.right.modWave },
-      },
-      steps: {
-        left: preset.leftSteps || prev.steps.left,
-        right: preset.rightSteps || prev.steps.right,
-      }
+      params: nextParams,
+      steps: nextSteps,
     }));
 
-    if (engineRef.current) {
-      if (preset.leftSteps) engineRef.current.updateSequencerSteps('left', preset.leftSteps);
-      if (preset.rightSteps) engineRef.current.updateSequencerSteps('right', preset.rightSteps);
-      
-      (['left', 'right'] as const).forEach(ch => {
-        const p = preset[ch];
-        engineRef.current!.setCarrierFrequency(ch, p.carrierFreq);
-        engineRef.current!.setCarrierWaveform(ch, p.carrierWave);
-        engineRef.current!.setModFrequency(ch, p.modFreq);
-        engineRef.current!.setModWaveform(ch, p.modWave);
-        engineRef.current!.setModDepth(ch, p.modDepth);
-        engineRef.current!.setMode(ch, p.mode);
-        engineRef.current!.setBurstDuration(ch, p.burstDurationMs);
-        engineRef.current!.setDutyCycle(ch, p.dutyCycle);
-      });
-      
-      if (isRunning) {
-        engineRef.current.start();
-      }
-    }
+    // UNMOUNT PREVIOUS, MOUNT NEW: Exactly ONE patch at a time!
+    engineRef.current?.mountPatch(nextParams, nextSteps, wasRunning);
   };
 
   const handleSpeakerTest = async () => {
@@ -553,11 +601,21 @@ export default function App() {
       burstDurationMs: Math.round(20 + Math.random() * 480), // 20-500ms
     };
 
+    const randomSteps = Array.from({ length: 8 }, () => ({
+      active: Math.random() > 0.3,
+      amplitude: Number((0.2 + Math.random() * 0.8).toFixed(2)),
+      dutyCycle: 0.5
+    }));
+
     setAppState(prev => ({
       ...prev,
       params: {
         ...prev.params,
         [channel]: { ...prev.params[channel], ...randomParams }
+      },
+      steps: {
+        ...prev.steps,
+        [channel]: randomSteps
       }
     }));
 
@@ -573,6 +631,7 @@ export default function App() {
       engineRef.current.setMode(channel, randomParams.mode);
       engineRef.current.setBurstDuration(channel, randomParams.burstDurationMs);
       engineRef.current.setDutyCycle(channel, randomParams.dutyCycle);
+      engineRef.current.updateSequencerSteps(channel, randomSteps);
     }
     
     setActivePresetId(null);
@@ -1028,17 +1087,47 @@ export default function App() {
               />
             )}
             {activeTab === 'spectrum' && <SpectrumAnalyzer engine={engineRef.current} isRunning={isRunning} activeChannel={activeChannel} params={params} />}
-            {activeTab === 'ayurvedic' && <AyurvedicHarmonics />}
-            {activeTab === 'composer' && <Composer onPlayProtocol={(p) => engineRef.current?.scheduleProtocol(p)} onStopProtocol={() => engineRef.current?.stop()} />}
-            {activeTab === 'player' && <Player engine={engineRef.current} />}
+            {activeTab === 'ayurvedic' && (
+              <AyurvedicHarmonics 
+                externalStopTrigger={externalStopTrigger}
+                onDroneToggle={(active) => {
+                  if (active) {
+                    engineRef.current?.stop();
+                    setIsRunning(false);
+                  }
+                }}
+              />
+            )}
+            {activeTab === 'composer' && (
+              <Composer 
+                externalStopTrigger={externalStopTrigger}
+                onPlayProtocol={async (p) => {
+                  setExternalStopTrigger(Date.now());
+                  setIsRunning(true);
+                  await engineRef.current?.scheduleProtocol(p);
+                }} 
+                onStopProtocol={() => {
+                  engineRef.current?.stop();
+                  setIsRunning(false);
+                }} 
+              />
+            )}
+            {activeTab === 'player' && (
+              <Player 
+                engine={engineRef.current} 
+                externalStopTrigger={externalStopTrigger}
+                onPlayStateChange={(playing) => setIsRunning(playing)}
+              />
+            )}
             {activeTab === 'midi' && <MidiMappingOverview onRefresh={() => {}} />}
             {activeTab === 'ai' && (
               <AiCoPilot 
                 currentState={{ params, isRunning, activeChannel }}
                 onExecuteCommand={handleAiCommand}
-                onLoadProtocol={(p) => {
-                  engineRef.current?.scheduleProtocol(p);
-                  if (!isRunning) togglePower();
+                onLoadProtocol={async (p) => {
+                  setExternalStopTrigger(Date.now());
+                  setIsRunning(true);
+                  await engineRef.current?.scheduleProtocol(p);
                 }}
               />
             )}

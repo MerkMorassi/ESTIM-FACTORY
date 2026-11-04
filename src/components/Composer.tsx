@@ -36,6 +36,7 @@ import { motion, AnimatePresence, Reorder } from 'motion/react';
 interface ComposerProps {
   onPlayProtocol: (protocol: StimulationProtocol) => void;
   onStopProtocol: () => void;
+  externalStopTrigger?: number;
 }
 
 const DEFAULT_BEAT_STEPS: BeatStep[] = Array(16).fill(null).map(() => ({ type: 'none' }));
@@ -125,7 +126,7 @@ const INITIAL_PROTOCOL: StimulationProtocol = {
   }
 };
 
-export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol, onStopProtocol }) => {
+export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol, onStopProtocol, externalStopTrigger }) => {
   const [protocol, setProtocol] = useState<StimulationProtocol>(INITIAL_PROTOCOL);
   const { protocols: savedProtocols, saveProtocol: dbSave, deleteProtocol: dbDelete } = useProtocols();
   const { beats: savedBeats, saveBeat: dbSaveBeat, deleteBeat: dbDeleteBeat } = useBeats();
@@ -140,6 +141,15 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol, onStopProtoc
   const totalTimeMs = React.useMemo(() => 
     protocol.channels[activeChannel].reduce((acc, s) => acc + s.durationSec, 0) * 1000
   , [protocol.channels, activeChannel]);
+
+  React.useEffect(() => {
+    if (externalStopTrigger && isPlaying) {
+      onStopProtocol();
+      setIsPlaying(false);
+      setStartTime(null);
+      setElapsedTime(0);
+    }
+  }, [externalStopTrigger]);
 
   React.useEffect(() => {
     let interval: number;

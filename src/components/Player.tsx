@@ -19,9 +19,11 @@ import { SignalEngine } from '../audio/signalEngine';
 
 interface PlayerProps {
   engine: SignalEngine | null;
+  onPlayStateChange?: (playing: boolean) => void;
+  externalStopTrigger?: number;
 }
 
-export const Player: React.FC<PlayerProps> = ({ engine }) => {
+export const Player: React.FC<PlayerProps> = ({ engine, onPlayStateChange, externalStopTrigger }) => {
   const { protocols, isLoading } = useProtocols();
   const [selectedProtocol, setSelectedProtocol] = useState<StimulationProtocol | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -42,6 +44,17 @@ export const Player: React.FC<PlayerProps> = ({ engine }) => {
       formattedDuration: new Date(totalDurationMs).toISOString().substr(14, 5)
     };
   }, [selectedProtocol]);
+
+  useEffect(() => {
+    if (externalStopTrigger && isPlaying) {
+      if (engine) {
+        engine.stop();
+      }
+      setIsPlaying(false);
+      setStartTime(null);
+      onPlayStateChange?.(false);
+    }
+  }, [externalStopTrigger]);
 
   useEffect(() => {
     let interval: number;
@@ -69,6 +82,7 @@ export const Player: React.FC<PlayerProps> = ({ engine }) => {
       setIsPlaying(true);
       setProgress(0);
       setElapsedTime(0);
+      onPlayStateChange?.(true);
     } catch (error) {
       console.error("Playback failed:", error);
     }
@@ -82,6 +96,7 @@ export const Player: React.FC<PlayerProps> = ({ engine }) => {
     setStartTime(null);
     setProgress(100);
     setElapsedTime(selectedProtocol?.totalDurationMs || 0);
+    onPlayStateChange?.(false);
   };
 
   const resetProtocol = () => {
@@ -92,6 +107,7 @@ export const Player: React.FC<PlayerProps> = ({ engine }) => {
     setStartTime(null);
     setProgress(0);
     setElapsedTime(0);
+    onPlayStateChange?.(false);
   };
 
   const formatMs = (ms: number) => {
