@@ -4,6 +4,7 @@
  */
 
 import { SignalParameters, SequencerStep, WaveformType, StimulationProtocol, ProtocolSegment, ModulationMode } from '../types/telemetry';
+import { WATCHDOG_PROCESSOR_NAME, WATCHDOG_WORKLET_SOURCE } from './watchdogWorklet';
 
 export const POP_FREE_RAMP_SEC = 0.030;
 export const COLD_START_RAMP_SEC = 2.0;
@@ -747,6 +748,71 @@ export class SignalEngine {
   
   private crossFMConnection: GainNode | null = null;
   private protocolEndTimer: number | null = null;
+  // Audio-thread watchdog (AudioWorklet): merger -> outputGate -> destination.
+  private outputGate: AudioWorkletNode | null = null;
+  private gateCtx: BaseAudioContext | null = null;
+  private onWatchdogTrip: (() => void) | null = null;
+
+  /** Called (on the main thread, once it runs again) after the audio-thread watchdog cut output. */
+  public setOnWatchdogTrip(cb: (() => void) | null): void {
+    this.onWatchdogTrip = cb;
+  }
+
+  /** True when the audio-thread watchdog is active (AudioWorklet loaded). */
+  public hasAudioThreadWatchdog(): boolean {
+    return this.outputGate !== null;
+  }
+
+  /**
+   * Wire merger -> watchdog gate -> destination. Falls back to a direct
+   * connection (main-thread watchdog only) if AudioWorklet is unavailable.
+   */
+  private async wireOutput(): Promise<void> {
+    if (!this.ctx || !this.merger) return;
+    this.merger.disconnect();
+    if (this.gateCtx !== this.ctx) {
+      this.outputGate = null;
+      this.gateCtx = this.ctx;
+      try {
+        if (!this.ctx.audioWorklet) throw new Error('AudioWorklet not supported');
+        const url = URL.createObjectURL(new Blob([WATCHDOG_WORKLET_SOURCE], { type: 'application/javascript' }));
+        try {
+          await this.ctx.audioWorklet.addModule(url);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+        const gate = new AudioWorkletNode(this.ctx, WATCHDOG_PROCESSOR_NAME, {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [2],
+          channelCount: 2,
+          channelCountMode: 'explicit',
+          channelInterpretation: 'discrete',
+          processorOptions: { timeoutSec: WATCHDOG_TIMEOUT_MS / 1000 },
+        });
+        gate.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'tripped') {
+            console.error('AUDIO-THREAD WATCHDOG: main thread silent; output faded to zero.', e.data);
+            this.clearProtocolEndTimer();
+            this.chains?.left.stop();
+            this.chains?.right.stop();
+            this.isRunning = false;
+            this.onWatchdogTrip?.();
+          }
+        };
+        gate.connect(this.ctx.destination);
+        this.outputGate = gate;
+      } catch (err) {
+        console.warn('Audio-thread watchdog unavailable; main-thread watchdog only.', err);
+        this.outputGate = null;
+      }
+    }
+    this.merger.connect(this.outputGate ?? this.ctx.destination);
+  }
+
+  private postGate(type: 'arm' | 'disarm' | 'beat'): void {
+    this.outputGate?.port.postMessage({ type });
+  }
   private onProtocolEnd: (() => void) | null = null;
 
   /** Called once a scheduled protocol has faded out and the engine has stopped. */
@@ -772,7 +838,7 @@ export class SignalEngine {
     if (!AudioCtx) return false;
     this.ctx = new AudioCtx({ latencyHint: 'interactive' });
     this.merger = this.ctx.createChannelMerger(2);
-    this.merger.connect(this.ctx.destination);
+    await this.wireOutput();
     
     await this.mountPatch(this.params, this.steps, false);
     return true;
@@ -810,7 +876,7 @@ export class SignalEngine {
       if (!AudioCtx) return;
       this.ctx = new AudioCtx({ latencyHint: 'interactive' });
       this.merger = this.ctx.createChannelMerger(2);
-      this.merger.connect(this.ctx.destination);
+      await this.wireOutput();
     } else {
       if (this.ctx.state === 'suspended') {
         await this.ctx.resume();
@@ -827,7 +893,7 @@ export class SignalEngine {
 
     if (!this.merger && this.ctx) {
       this.merger = this.ctx.createChannelMerger(2);
-      this.merger.connect(this.ctx.destination);
+      await this.wireOutput();
     }
 
     this.chains = { 
@@ -854,12 +920,14 @@ export class SignalEngine {
       this.chains.left.start();
       this.chains.right.start();
       this.isRunning = true;
+      this.postGate('arm');
     }
   }
 
   public heartbeat(): void {
     this.chains?.left.heartbeat();
     this.chains?.right.heartbeat();
+    this.postGate('beat');
   }
 
   public async start(): Promise<void> { 
@@ -872,6 +940,7 @@ export class SignalEngine {
     this.chains?.left.start(); 
     this.chains?.right.start(); 
     this.isRunning = true; 
+    this.postGate('arm');
   }
   
   public stop(): void { 
@@ -879,6 +948,7 @@ export class SignalEngine {
     this.chains?.left.stop(); 
     this.chains?.right.stop(); 
     this.isRunning = false; 
+    this.postGate('disarm');
   }
   
   public setMute(ch: 'left' | 'right', muted: boolean): void { this.chains?.[ch].setMute(muted); }
@@ -963,6 +1033,7 @@ export class SignalEngine {
       lastEnd = Math.max(lastEnd, time);
     });
     this.isRunning = true;
+    this.postGate('arm');
 
     // Then power off once the fade is done.
     const delayMs = (lastEnd - now + PROTOCOL_END_FADE_SEC) * 1000 + 100;
@@ -977,6 +1048,8 @@ export class SignalEngine {
     this.clearProtocolEndTimer();
     this.unmountCurrentPatch();
     this.merger?.disconnect();
+    this.outputGate?.disconnect();
+    this.outputGate = null;
     this.ctx?.close(); 
   }
 }

@@ -159,6 +159,11 @@ export default function App() {
     engine.setOnStepCallback('right', (step) => setCurrentStep(prev => ({ ...prev, right: step })));
     // Protocol finished: engine faded to zero and powered off; mirror it in the UI.
     engine.setOnProtocolEnd(() => setIsRunning(false));
+    // Audio-thread watchdog cut output (main thread was frozen); mirror it in the UI.
+    engine.setOnWatchdogTrip(() => {
+      setIsRunning(false);
+      setExternalStopTrigger(Date.now());
+    });
     engineRef.current = engine;
 
     const initMidi = async () => {
