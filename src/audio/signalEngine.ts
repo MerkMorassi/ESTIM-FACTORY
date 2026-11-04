@@ -10,6 +10,29 @@ export const COLD_START_RAMP_SEC = 2.0;
 export const WATCHDOG_TIMEOUT_MS = 1000;
 export const SAFETY_CEILING_GAIN = 0.50;
 
+// SYS.AI.MAYA.GITHUB — final gain clamp.
+// Every gain target written to masterGain goes through safeGain(), and the last
+// node of each chain is a hard limiter (WaveShaper) that clips the sample values
+// at +/- SAFETY_CEILING_GAIN. Nothing upstream (sweat-sim boost, AI values, MIDI,
+// protocol intensities, RMS compensation) can push the output past the cap.
+const clampUnit = (v: number): number => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0);
+export const safeGain = (level: number, attenuation: number = 1): number => {
+  const att = Number.isFinite(attenuation) ? Math.max(0, attenuation) : 1;
+  return Math.min(SAFETY_CEILING_GAIN, clampUnit(level) * SAFETY_CEILING_GAIN * att);
+};
+const buildCeilingCurve = (): Float32Array => {
+  // 4097 points over [-1, 1]; breakpoints at +/-0.5 land exactly on grid points
+  // (index 1024 and 3072), so the piecewise-linear curve is exact. Inputs beyond
+  // [-1, 1] are held at the end values (+/-0.5) by the WaveShaper spec.
+  const n = 4097;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = -1 + (2 * i) / (n - 1);
+    curve[i] = Math.max(-SAFETY_CEILING_GAIN, Math.min(SAFETY_CEILING_GAIN, x));
+  }
+  return curve;
+};
+
 // RMS Compensation: Sine (0.707) vs Triangle (0.577)
 // Factor to bring Triangle up to Sine weight: 0.707 / 0.577 ≈ 1.2247
 const getRMSFactor = (type: WaveformType) => (type === 'triangle' ? 1.2247 : 1.0);
@@ -31,6 +54,7 @@ export class SignalChain {
   private masterGain: GainNode | null = null;
   private muteGain: GainNode | null = null;
   private watchdogGain: GainNode | null = null;
+  private ceilingLimiter: WaveShaperNode | null = null;
   
   private modOsc: OscillatorNode | null = null;
   private modGain: GainNode | null = null;
@@ -88,7 +112,7 @@ export class SignalChain {
       // Affect master volume slightly as impedance changes (higher impedance = lower current)
       const attenuation = 1000 / this.currentImpedance;
       const now = this.ctx.currentTime;
-      this.masterGain!.gain.setTargetAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN * attenuation, now, 0.5);
+      this.masterGain!.gain.setTargetAtTime(safeGain(this.params.masterVolume, attenuation), now, 0.5);
     }, 1000);
   }
 
@@ -126,6 +150,10 @@ export class SignalChain {
 
     this.watchdogGain = this.ctx.createGain();
     this.watchdogGain.gain.setValueAtTime(0.0001, now);
+
+    this.ceilingLimiter = this.ctx.createWaveShaper();
+    this.ceilingLimiter.curve = buildCeilingCurve() as unknown as Float32Array<ArrayBuffer>;
+    this.ceilingLimiter.oversample = 'none';
 
     this.vcaGain = this.ctx.createGain();
     this.vcaGain.gain.setValueAtTime(0.0, now);
@@ -189,11 +217,12 @@ export class SignalChain {
     this.phaseDelay.connect(this.sequencerGain);
     this.sequencerGain.connect(this.vcaGain);
     
-    // STRICT LINEAR ROUTING: vca -> master -> mute -> watchdog -> analyser -> output
+    // STRICT LINEAR ROUTING: vca -> master -> mute -> watchdog -> ceilingLimiter -> analyser -> output
     this.vcaGain.connect(this.masterGain);
     this.masterGain.connect(this.muteGain);
     this.muteGain.connect(this.watchdogGain);
-    this.watchdogGain.connect(this.analyser);
+    this.watchdogGain.connect(this.ceilingLimiter);
+    this.ceilingLimiter.connect(this.analyser);
     this.analyser.connect(this.output);
     
     this.carrierOscA.start(now);
@@ -319,7 +348,7 @@ export class SignalChain {
         this.watchdogGain.gain.setValueAtTime(0.0001, now);
       } else {
         const attenuation = 1000 / this.currentImpedance;
-        this.masterGain.gain.setValueAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN * attenuation, now);
+        this.masterGain.gain.setValueAtTime(safeGain(this.params.masterVolume, attenuation), now);
         this.watchdogGain.gain.setValueAtTime(1.0, now);
         if (this.params.mode === 'sequenced' || this.params.mode === 'burst' || this.params.mode === 'sweep') {
           this.startClock();
@@ -339,7 +368,7 @@ export class SignalChain {
 
     const attenuation = 1000 / this.currentImpedance;
     this.masterGain!.gain.setValueAtTime(0.0001, now);
-    this.masterGain!.gain.linearRampToValueAtTime(this.params.masterVolume * SAFETY_CEILING_GAIN * attenuation, now + POP_FREE_RAMP_SEC);
+    this.masterGain!.gain.linearRampToValueAtTime(safeGain(this.params.masterVolume, attenuation), now + POP_FREE_RAMP_SEC);
 
     this.muteGain!.gain.setValueAtTime(this.isMuted ? 0.0001 : 1.0, now);
 
@@ -481,7 +510,7 @@ export class SignalChain {
     this.masterGain!.gain.cancelScheduledValues(now);
     this.masterGain!.gain.setValueAtTime(this.masterGain!.gain.value, now);
     const attenuation = 1000 / this.currentImpedance;
-    this.masterGain!.gain.linearRampToValueAtTime(vol * SAFETY_CEILING_GAIN * attenuation, now + POP_FREE_RAMP_SEC);
+    this.masterGain!.gain.linearRampToValueAtTime(safeGain(vol, attenuation), now + POP_FREE_RAMP_SEC);
   }
   
   public setMode(mode: ModulationMode): void { 
@@ -584,7 +613,7 @@ export class SignalChain {
           
           if (step.type !== 'none') {
             this.masterGain!.gain.setValueAtTime(0.0001, t);
-            this.masterGain!.gain.linearRampToValueAtTime(amp * SAFETY_CEILING_GAIN, t + 0.005);
+            this.masterGain!.gain.linearRampToValueAtTime(safeGain(amp), t + 0.005);
             this.masterGain!.gain.linearRampToValueAtTime(0.0001, t + pulseDuration);
             
             this.carrierOscA!.frequency.setValueAtTime(freq, t);
@@ -605,7 +634,7 @@ export class SignalChain {
       else param.exponentialRampToValueAtTime(Math.max(0.0001, end), endTime);
     };
 
-    ramp(this.masterGain!.gain, startIntensity * SAFETY_CEILING_GAIN, endIntensity * SAFETY_CEILING_GAIN);
+    ramp(this.masterGain!.gain, Math.max(0.0001, safeGain(startIntensity)), Math.max(0.0001, safeGain(endIntensity)));
     ramp(this.carrierOscA!.frequency, startCarrierFreq, endCarrierFreq);
     ramp(this.carrierOscB!.frequency, startCarrierFreq, endCarrierFreq);
     ramp(this.modOsc!.frequency, startModFreq, endModFreq);
@@ -687,6 +716,7 @@ export class SignalChain {
     this.masterGain?.disconnect();
     this.muteGain?.disconnect();
     this.watchdogGain?.disconnect();
+    this.ceilingLimiter?.disconnect();
     this.analyser?.disconnect();
     this.envAnalyser?.disconnect();
     this.input.disconnect(); 
