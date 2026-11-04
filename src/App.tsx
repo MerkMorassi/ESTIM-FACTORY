@@ -57,7 +57,7 @@ import {
   RotateCw,
   Dices,
 } from 'lucide-react';
-import { midiService, MidiMappingType } from './audio/midiService';
+import { midiService, MidiMappingType, MidiCallback } from './audio/midiService';
 import { Settings } from './components/Settings';
 import { useUndoRedo } from './lib/useUndoRedo';
 
@@ -151,6 +151,7 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; param: MidiMappingType; channel: 'left' | 'right' | 'both' } | null>(null);
 
   const engineRef = useRef<SignalEngine | null>(null);
+  const midiHandlerRef = useRef<MidiCallback>(() => {});
 
   useEffect(() => {
     const engine = new SignalEngine(params, steps);
@@ -168,40 +169,10 @@ export default function App() {
         const inputs = midiService.getInputs();
         setIsMpd218Connected(inputs.some(input => input.name?.includes('MPD218')));
 
+        // Registered once; always forwards to the latest handler (see midiHandlerRef
+        // below) so pads and knobs act on live state, not the startup snapshot.
         midiService.setCallback((param, value, channel) => {
-          setMidiLastCC(`${param.toUpperCase()}`);
-          
-          if (param === 'masterVolume') {
-            dispatchMasterVolume(channel, value);
-          } else if (param === 'carrierFreq') {
-            const freq = Math.round(10 + (value * 3990)); // 10-4000
-            dispatchCarrierFreq(channel, freq);
-          } else if (param === 'modFreq') {
-            const freq = Math.round(1 + (value * 149)); // 1-150
-            dispatchModFreq(channel, freq);
-          } else if (param === 'modDepth') {
-            dispatchModDepth(channel, value);
-          } else if (param === 'carrierMorph') {
-            dispatchCarrierMorph(channel, value);
-          } else if (param === 'carrierPhase') {
-            const phase = Math.round(value * 360);
-            dispatchCarrierPhase(channel, phase);
-          } else if (param === 'masterBpm') {
-            const bpm = Math.round(40 + (value * 200)); // 40-240
-            dispatchMasterBpm(bpm);
-          } else if (param === 'power') {
-            togglePower();
-          } else if (param === 'mode') {
-            // Cycle modes: continuous -> burst -> sequenced -> sweep
-            const modes: ModulationMode[] = ['continuous', 'burst', 'sequenced', 'sweep'];
-            const currentMode = appState.params[activeChannel].mode;
-            const nextMode = modes[(modes.indexOf(currentMode) + 1) % modes.length];
-            dispatchMode(activeChannel, nextMode);
-          } else if (param === 'sync') {
-            dispatchSyncToMaster(activeChannel, !appState.params[activeChannel].syncToMaster);
-          } else if (param === 'channelFocus') {
-            setActiveChannel(prev => prev === 'left' ? 'right' : 'left');
-          }
+          midiHandlerRef.current(param, value, channel);
         });
       }
     };
@@ -247,6 +218,52 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [undo, redo]);
+
+  // MIDI: re-created every render so it closes over current state (SYS.AI.MAYA.GITHUB).
+  // Fixes the stale-closure bug where the power pad restarted output with startup
+  // values and mode/sync pads acted on stale settings.
+  midiHandlerRef.current = (param, value, channel) => {
+    setMidiLastCC(`${param.toUpperCase()}`);
+
+    if (param === 'masterVolume') {
+      dispatchMasterVolume(channel, value);
+    } else if (param === 'carrierFreq') {
+      const freq = Math.round(10 + (value * 3990)); // 10-4000
+      dispatchCarrierFreq(channel, freq);
+    } else if (param === 'modFreq') {
+      const freq = Math.round(1 + (value * 149)); // 1-150
+      dispatchModFreq(channel, freq);
+    } else if (param === 'modDepth') {
+      dispatchModDepth(channel, value);
+    } else if (param === 'carrierMorph') {
+      dispatchCarrierMorph(channel, value);
+    } else if (param === 'carrierPhase') {
+      const phase = Math.round(value * 360);
+      dispatchCarrierPhase(channel, phase);
+    } else if (param === 'masterBpm') {
+      const bpm = Math.round(40 + (value * 200)); // 40-240
+      dispatchMasterBpm(bpm);
+    } else if (param === 'power') {
+      // Power pad: if anything is playing (live patch or protocol), it stops.
+      if (isRunning || engineRef.current?.getIsRunning()) {
+        engineRef.current?.stop();
+        setIsRunning(false);
+        setExternalStopTrigger(Date.now());
+      } else {
+        togglePower();
+      }
+    } else if (param === 'mode') {
+      // Cycle modes: continuous -> burst -> sequenced -> sweep
+      const modes: ModulationMode[] = ['continuous', 'burst', 'sequenced', 'sweep'];
+      const currentMode = params[activeChannel].mode;
+      const nextMode = modes[(modes.indexOf(currentMode) + 1) % modes.length];
+      dispatchMode(activeChannel, nextMode);
+    } else if (param === 'sync') {
+      dispatchSyncToMaster(activeChannel, !params[activeChannel].syncToMaster);
+    } else if (param === 'channelFocus') {
+      setActiveChannel(prev => prev === 'left' ? 'right' : 'left');
+    }
+  };
 
   const handleMidiLearn = (param: MidiMappingType, channel: 'left' | 'right' | 'both') => {
     setIsLearning(true);
