@@ -43,6 +43,7 @@ export const Settings: React.FC = () => {
       voice: 'Kore',
       fallbackVoice: 'Google UK English Female',
       useVoiceFeedback: true,
+      accessToken: settings.accessToken, // keep the token on reset
     };
     setSettings(defaults);
     aiSettingsStorage.save(defaults);
@@ -179,6 +180,20 @@ export const Settings: React.FC = () => {
             <label htmlFor="voiceFeedback" className="text-[10px] font-bold text-slate-400 uppercase cursor-pointer">
               Enable Autonomous Neural Feedback (Voice)
             </label>
+          </div>
+          <div className="space-y-2">
+            <label htmlFor="copilotToken" className="text-[9px] font-black text-slate-500 uppercase tracking-wider">
+              Co-pilot access token
+            </label>
+            <input
+              id="copilotToken"
+              type="password"
+              autoComplete="off"
+              value={settings.accessToken}
+              onChange={(e) => setSettings({ ...settings, accessToken: e.target.value })}
+              placeholder="Only needed if the server sets COPILOT_ACCESS_TOKEN"
+              className="w-full bg-[#101720] border border-[#1e293b] rounded-lg py-2.5 px-4 text-xs text-slate-200 focus:outline-none focus:border-cyan-800"
+            />
           </div>
         </div>
 

@@ -5,6 +5,38 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { sanitizeAiResponse, AI_LIMITS } from './src/lib/aiGuard';
+import crypto from 'crypto';
+import type { Request, Response, NextFunction } from 'express';
+
+// --- AI route protection (SYS.AI.MAYA.GITHUB) ---------------------------------
+// The /api/ai/* routes spend the server's Gemini key. They used to be open to
+// anyone who could reach the server, with a 50 MB body limit.
+//  - If COPILOT_ACCESS_TOKEN is set, every AI request must send it in the
+//    x-copilot-token header (enter it in Settings > Co-pilot access token).
+//  - If it is not set, AI routes only answer requests from this machine
+//    (loopback), so `npm run dev` on localhost keeps working.
+const COPILOT_ACCESS_TOKEN = process.env.COPILOT_ACCESS_TOKEN || '';
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest();
+
+function requireCopilotAuth(req: Request, res: Response, next: NextFunction) {
+  if (COPILOT_ACCESS_TOKEN) {
+    const sent = req.get('x-copilot-token') || '';
+    if (sent && crypto.timingSafeEqual(sha256(sent), sha256(COPILOT_ACCESS_TOKEN))) return next();
+    return res.status(401).json({ error: 'Co-pilot access token missing or wrong.' });
+  }
+  if (LOOPBACK.has(req.socket.remoteAddress || '')) return next();
+  return res.status(401).json({
+    error: 'Co-pilot is locked to localhost. Set COPILOT_ACCESS_TOKEN on the server and enter it in Settings.',
+  });
+}
+
+// Per-route body limits (was a global 50 MB).
+const BODY_LIMITS = { command: '256kb', tts: '32kb', stt: '8mb' } as const;
+const MAX_PROMPT_CHARS = 4000;
+const MAX_TTS_CHARS = 2000;
+const MODEL_RE = /^gemini-[a-z0-9.\-]{1,60}$/i;
+const safeModel = (m: unknown, fallback: string) => (typeof m === 'string' && MODEL_RE.test(m) ? m : fallback);
 
 dotenv.config();
 
@@ -13,7 +45,6 @@ const __dirname = path.dirname(__filename);
 
 async function createServer() {
   const app = express();
-  app.use(express.json({ limit: '50mb' }));
 
   const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY || '',
@@ -25,15 +56,18 @@ async function createServer() {
   });
 
   // AI Command / Protocol Generation Endpoint
-  app.post('/api/ai/command', async (req, res) => {
+  app.post('/api/ai/command', requireCopilotAuth, express.json({ limit: BODY_LIMITS.command }), async (req, res) => {
     try {
       const { prompt, currentState, model } = req.body;
-      if (!prompt) {
+      if (!prompt || typeof prompt !== 'string') {
         return res.status(400).json({ error: 'Missing prompt' });
+      }
+      if (prompt.length > MAX_PROMPT_CHARS) {
+        return res.status(413).json({ error: `Prompt longer than ${MAX_PROMPT_CHARS} characters.` });
       }
 
       const response = await ai.models.generateContent({
-        model: model || "gemini-3.8-flash",
+        model: safeModel(model, "gemini-3.8-flash"),
         contents: [{ role: 'user', parts: [{ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) }] }],
         config: {
           systemInstruction: `You are the AI Co-Pilot for the Signal Telemetry Profiler, a high-precision stimulation system.
@@ -94,15 +128,18 @@ async function createServer() {
   });
 
   // TTS Endpoint
-  app.post('/api/ai/tts', async (req, res) => {
+  app.post('/api/ai/tts', requireCopilotAuth, express.json({ limit: BODY_LIMITS.tts }), async (req, res) => {
     try {
       const { text, voice, model } = req.body;
       if (!text || typeof text !== 'string' || text.trim() === '') {
         return res.json({ audio: null }); // Or return a 400, but silence is often better for TTS fallback
       }
+      if (text.length > MAX_TTS_CHARS) {
+        return res.status(413).json({ error: `Text longer than ${MAX_TTS_CHARS} characters.` });
+      }
 
       const response = await ai.models.generateContent({
-        model: model || "gemini-3.8-flash-lite-tts",
+        model: safeModel(model, "gemini-3.8-flash-lite-tts"),
         contents: [
           {
             role: "user",
@@ -113,7 +150,7 @@ async function createServer() {
           responseModalities: ["AUDIO"],
           speechConfig: {
             voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voice || "Kore" },
+              prebuiltVoiceConfig: { voiceName: typeof voice === 'string' && /^[A-Za-z]{1,32}$/.test(voice) ? voice : "Kore" },
             },
           },
         },
@@ -131,15 +168,15 @@ async function createServer() {
   });
 
   // STT Endpoint
-  app.post('/api/ai/stt', async (req, res) => {
+  app.post('/api/ai/stt', requireCopilotAuth, express.json({ limit: BODY_LIMITS.stt }), async (req, res) => {
     try {
       const { audio, model } = req.body; // base64 webm/wav
-      if (!audio) {
+      if (!audio || typeof audio !== 'string') {
         return res.status(400).json({ error: 'Missing audio data' });
       }
 
       const response = await ai.models.generateContent({
-        model: model || "gemini-3.5-transcribe",
+        model: safeModel(model, "gemini-3.5-transcribe"),
         contents: [
           {
             role: "user",
@@ -156,6 +193,13 @@ async function createServer() {
       console.error('STT Error:', error);
       res.status(500).json({ error: error.message });
     }
+  });
+
+  // Oversized bodies -> JSON 413 instead of an HTML stack trace.
+  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
+    if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Request body too large.' });
+    if (err?.type === 'entity.parse.failed') return res.status(400).json({ error: 'Malformed JSON.' });
+    return next(err);
   });
 
   const vite = await createViteServer({

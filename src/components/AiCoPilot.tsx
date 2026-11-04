@@ -17,7 +17,7 @@ import {
   Sparkles
 } from 'lucide-react';
 
-import { aiSettingsStorage, AiSettings } from '../lib/aiSettings';
+import { aiSettingsStorage, AiSettings, aiHeaders } from '../lib/aiSettings';
 import { sanitizeAiResponse, SanitizedCommand, SanitizedProtocol } from '../lib/aiGuard';
 
 interface AiCoPilotProps {
@@ -75,10 +75,15 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
     try {
       const response = await fetch('/api/ai/command', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: aiHeaders(),
         body: JSON.stringify({ prompt: text, currentState })
       });
 
+      if (response.status === 401) {
+        const { error } = await response.json().catch(() => ({ error: 'Unauthorized' }));
+        setMessages(prev => [...prev, { role: 'assistant', content: `Co-pilot locked: ${error}`, type: 'analysis' }]);
+        return;
+      }
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       // Server already sanitizes; validate again here, right before applying.
       const result = sanitizeAiResponse(await response.json());
@@ -139,7 +144,7 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
     try {
       const response = await fetch('/api/ai/tts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: aiHeaders(),
         body: JSON.stringify({ 
           text, 
           voice: aiSettings.voice,
@@ -210,7 +215,7 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
     try {
       const response = await fetch('/api/ai/stt', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: aiHeaders(),
         body: JSON.stringify({ audio: base64Audio, model: 'gemini-3.5-transcribe' })
       });
       const { text } = await response.json();
