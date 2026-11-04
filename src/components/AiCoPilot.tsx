@@ -18,17 +18,21 @@ import {
 } from 'lucide-react';
 
 import { aiSettingsStorage, AiSettings } from '../lib/aiSettings';
+import { sanitizeAiResponse, SanitizedCommand, SanitizedProtocol } from '../lib/aiGuard';
 
 interface AiCoPilotProps {
   currentState: any;
-  onExecuteCommand: (command: any) => void;
-  onLoadProtocol: (protocol: any) => void;
+  onExecuteCommand: (command: SanitizedCommand) => void;
+  onLoadProtocol: (protocol: SanitizedProtocol) => void;
 }
 
 interface Message {
   role: 'user' | 'assistant';
   content: string;
   type?: 'command' | 'protocol' | 'analysis';
+  /** Staged AI protocol: never auto-started, the user presses Run. */
+  protocol?: SanitizedProtocol;
+  guardNote?: string;
 }
 
 export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCommand, onLoadProtocol }) => {
@@ -75,20 +79,26 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
         body: JSON.stringify({ prompt: text, currentState })
       });
 
-      const result = await response.json();
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      // Server already sanitizes; validate again here, right before applying.
+      const result = sanitizeAiResponse(await response.json());
+      const { dropped, adjusted } = result.report;
+      const guardNote = dropped.length || adjusted.length
+        ? `Safety guard: ${adjusted.length ? `clamped ${adjusted.join(', ')}` : ''}${adjusted.length && dropped.length ? '; ' : ''}${dropped.length ? `ignored ${dropped.join(', ')}` : ''}`
+        : undefined;
       
       const assistantMessage: Message = { 
         role: 'assistant', 
         content: result.message,
-        type: result.type
+        type: result.type,
+        protocol: result.type === 'protocol' ? (result.data as SanitizedProtocol) : undefined,
+        guardNote,
       };
       
       setMessages(prev => [...prev, assistantMessage]);
 
-      if (result.type === 'command') {
-        onExecuteCommand(result.data);
-      } else if (result.type === 'protocol') {
-        onLoadProtocol(result.data);
+      if (result.type === 'command' && result.data) {
+        onExecuteCommand(result.data as SanitizedCommand);
       }
 
       if (aiSettings.useVoiceFeedback) {
@@ -271,6 +281,17 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
               <div className="whitespace-pre-wrap leading-relaxed">
                 {msg.content}
               </div>
+              {msg.guardNote && (
+                <div className="mt-2 text-[9px] font-mono text-amber-300/80">{msg.guardNote}</div>
+              )}
+              {msg.protocol && (
+                <button
+                  onClick={() => msg.protocol && onLoadProtocol(msg.protocol)}
+                  className="mt-2 px-3 py-1.5 rounded-lg bg-purple-900/40 border border-purple-700/60 text-purple-200 text-[10px] font-bold uppercase tracking-widest hover:bg-purple-800/50"
+                >
+                  Run protocol ({Math.round(msg.protocol.totalDurationMs / 1000)} s)
+                </button>
+              )}
               {msg.type && (
                 <div className="mt-2 pt-2 border-t border-white/5 flex items-center gap-2 text-[9px] font-black uppercase tracking-tighter">
                   {msg.type === 'command' && <Zap className="w-3 h-3 text-amber-400" />}
@@ -280,7 +301,7 @@ export const AiCoPilot: React.FC<AiCoPilotProps> = ({ currentState, onExecuteCom
                     msg.type === 'command' ? 'text-amber-400' : 
                     msg.type === 'protocol' ? 'text-purple-400' : 'text-emerald-400'
                   }>
-                    {msg.type} EXECUTED
+                    {msg.type === 'protocol' ? 'protocol STAGED' : `${msg.type} EXECUTED`}
                   </span>
                 </div>
               )}

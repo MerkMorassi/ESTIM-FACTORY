@@ -31,6 +31,7 @@ import { Composer } from './components/Composer';
 import { Player } from './components/Player';
 import { MidiMappingOverview } from './components/MidiMappingOverview';
 import { AiCoPilot } from './components/AiCoPilot';
+import type { SanitizedCommand } from './lib/aiGuard';
 import {
   Power,
   Volume2,
@@ -563,7 +564,8 @@ export default function App() {
     }, 600);
   };
 
-  const handleAiCommand = (data: any) => {
+  // data is already validated and clamped by lib/aiGuard (SYS.AI.MAYA.GITHUB)
+  const handleAiCommand = (data: SanitizedCommand) => {
     const ch = data.ch === 'both' ? ['left', 'right'] : [data.ch || activeChannel];
     
     (ch as ('left' | 'right')[]).forEach(c => {
@@ -576,10 +578,8 @@ export default function App() {
       if (data.carrierPhase !== undefined) dispatchCarrierPhase(c, data.carrierPhase);
     });
 
-    if (data.power !== undefined) {
-      if (data.power && !isRunning) togglePower();
-      if (!data.power && isRunning) togglePower();
-    }
+    // The AI may stop output, never start it.
+    if (data.power === false && isRunning) togglePower();
   };
 
   const randomizeActiveChannel = () => {

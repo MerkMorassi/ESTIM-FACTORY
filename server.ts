@@ -4,6 +4,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { sanitizeAiResponse, AI_LIMITS } from './src/lib/aiGuard';
 
 dotenv.config();
 
@@ -52,7 +53,16 @@ async function createServer() {
           }
           
           For "protocol" type, data must be a StimulationProtocol object.
-          For "command" type, data can contain keys like "carrierFreq", "modFreq", "masterVolume", "mode", "ch" ('left' | 'right' | 'both'), etc.`,
+          For "command" type, data can contain keys like "carrierFreq", "modFreq", "masterVolume", "mode", "ch" ('left' | 'right' | 'both'), etc.
+
+          HARD LIMITS (enforced in code; values outside them are clamped or discarded):
+          - carrierFreq / startCarrierFreq / endCarrierFreq: ${AI_LIMITS.carrierFreq.min}-${AI_LIMITS.carrierFreq.max} Hz
+          - modFreq / startModFreq / endModFreq: ${AI_LIMITS.modFreq.min}-${AI_LIMITS.modFreq.max} Hz
+          - masterVolume, modDepth, carrierMorph, startIntensity, endIntensity: 0.0-1.0
+          - carrierPhase: 0-360 degrees; bpm / masterBpm: ${AI_LIMITS.bpm.min}-${AI_LIMITS.bpm.max}
+          - mode: one of continuous | burst | sequenced | sweep
+          - Protocols: at most ${AI_LIMITS.maxSegmentsPerChannel} segments per channel, each ${AI_LIMITS.segmentDurationSec.min}-${AI_LIMITS.segmentDurationSec.max} s, total at most ${AI_LIMITS.maxProtocolSec} s per channel. The final segment of every channel should end at intensity 0.
+          - You may set "power": false to stop output. You may NEVER turn power on; "power": true is ignored. Protocols you return are only staged; the user starts them.`,
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -66,7 +76,17 @@ async function createServer() {
         }
       });
 
-      res.json(JSON.parse(response.text || '{}'));
+      let parsed: unknown = {};
+      try {
+        parsed = JSON.parse(response.text || '{}');
+      } catch {
+        parsed = { message: 'Co-pilot returned malformed output; nothing was applied.', type: 'analysis' };
+      }
+      const safe = sanitizeAiResponse(parsed);
+      if (safe.report.dropped.length || safe.report.adjusted.length) {
+        console.warn('AI guard:', safe.report);
+      }
+      res.json({ message: safe.message, type: safe.type, data: safe.data, guard: safe.report });
     } catch (error: any) {
       console.error('AI Command Error:', error);
       res.status(500).json({ error: error.message });
