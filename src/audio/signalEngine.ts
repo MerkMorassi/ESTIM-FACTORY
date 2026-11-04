@@ -27,7 +27,7 @@ export const DEFAULT_CHANNEL_GUARD: ChannelGuard = { ceiling: 1, startFraction: 
 export function sanitizeGuard(g: Partial<ChannelGuard> | undefined): ChannelGuard {
   const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
   return {
-    ceiling: Math.min(1, Math.max(0.05, num(g?.ceiling, DEFAULT_CHANNEL_GUARD.ceiling))),
+    ceiling: Math.min(1, Math.max(0, num(g?.ceiling, DEFAULT_CHANNEL_GUARD.ceiling))),
     startFraction: Math.min(1, Math.max(0.05, num(g?.startFraction, DEFAULT_CHANNEL_GUARD.startFraction))),
     rampSec: Math.min(300, Math.max(0, num(g?.rampSec, DEFAULT_CHANNEL_GUARD.rampSec))),
   };
