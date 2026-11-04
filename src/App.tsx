@@ -156,6 +156,8 @@ export default function App() {
     const engine = new SignalEngine(params, steps);
     engine.setOnStepCallback('left', (step) => setCurrentStep(prev => ({ ...prev, left: step })));
     engine.setOnStepCallback('right', (step) => setCurrentStep(prev => ({ ...prev, right: step })));
+    // Protocol finished: engine faded to zero and powered off; mirror it in the UI.
+    engine.setOnProtocolEnd(() => setIsRunning(false));
     engineRef.current = engine;
 
     const initMidi = async () => {

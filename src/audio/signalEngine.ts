@@ -8,6 +8,8 @@ import { SignalParameters, SequencerStep, WaveformType, StimulationProtocol, Pro
 export const POP_FREE_RAMP_SEC = 0.030;
 export const COLD_START_RAMP_SEC = 2.0;
 export const WATCHDOG_TIMEOUT_MS = 1000;
+/** Fade from the last protocol stage's end level to silence (SYS.AI.MAYA.GITHUB). */
+export const PROTOCOL_END_FADE_SEC = 0.5;
 export const SAFETY_CEILING_GAIN = 0.50;
 
 // SYS.AI.MAYA.GITHUB — final gain clamp.
@@ -586,6 +588,16 @@ export class SignalChain {
     } 
   }
 
+  /**
+   * Protocol end: after the last stage, ramp the output to silence. This is
+   * scheduled on the audio thread, so it happens even if the UI thread stalls.
+   * Previously the last ramp held its end level forever.
+   */
+  public scheduleProtocolEnd(endTime: number, fadeSec: number = PROTOCOL_END_FADE_SEC): void {
+    if (!this.masterGain) return;
+    this.masterGain.gain.linearRampToValueAtTime(0.0001, endTime + fadeSec);
+  }
+
   public scheduleSegment(seg: ProtocolSegment, startTime: number, masterBpm?: number): void {
     const endTime = startTime + seg.durationSec;
     const bpm = masterBpm || seg.bpm || 120;
@@ -734,6 +746,20 @@ export class SignalEngine {
   private onStepCallbacks: { left: StepCallback | null; right: StepCallback | null } = { left: null, right: null };
   
   private crossFMConnection: GainNode | null = null;
+  private protocolEndTimer: number | null = null;
+  private onProtocolEnd: (() => void) | null = null;
+
+  /** Called once a scheduled protocol has faded out and the engine has stopped. */
+  public setOnProtocolEnd(cb: (() => void) | null): void {
+    this.onProtocolEnd = cb;
+  }
+
+  private clearProtocolEndTimer(): void {
+    if (this.protocolEndTimer !== null) {
+      window.clearTimeout(this.protocolEndTimer);
+      this.protocolEndTimer = null;
+    }
+  }
 
   constructor(params: { left: SignalParameters; right: SignalParameters }, steps: { left: SequencerStep[]; right: SequencerStep[] }) {
     this.params = { left: { ...params.left }, right: { ...params.right } };
@@ -777,6 +803,8 @@ export class SignalEngine {
     steps?: { left: SequencerStep[]; right: SequencerStep[] }, 
     startImmediately: boolean = false
   ): Promise<void> {
+    // Any new patch supersedes a pending protocol-end power-off.
+    this.clearProtocolEndTimer();
     if (!this.ctx || this.ctx.state === 'closed') {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
@@ -847,6 +875,7 @@ export class SignalEngine {
   }
   
   public stop(): void { 
+    this.clearProtocolEndTimer();
     this.chains?.left.stop(); 
     this.chains?.right.stop(); 
     this.isRunning = false; 
@@ -912,25 +941,40 @@ export class SignalEngine {
    * creates clean chains, and schedules segments strictly.
    */
   public async scheduleProtocol(p: StimulationProtocol): Promise<void> {
+    this.clearProtocolEndTimer();
     await this.mountPatch(undefined, undefined, false);
     if (!this.ctx || !this.chains) return;
     const now = this.ctx.currentTime;
-    
-    // Warm up the chains with volume open
-    this.chains.left.start();
-    this.chains.right.start();
+    let lastEnd = now;
     
     (['left', 'right'] as const).forEach(ch => {
+      const segments = p.channels[ch] || [];
+      // A channel with no stages stays silent (it used to play at the
+      // current master volume for as long as the other channel ran).
+      if (segments.length === 0) return;
+      this.chains![ch].start();
       let time = now;
-      p.channels[ch].forEach(seg => { 
+      segments.forEach(seg => { 
         this.chains?.[ch].scheduleSegment(seg, time, p.masterBpm); 
         time += seg.durationSec; 
       });
+      // Final stage ramps to zero instead of holding its end level.
+      this.chains![ch].scheduleProtocolEnd(time);
+      lastEnd = Math.max(lastEnd, time);
     });
     this.isRunning = true;
+
+    // Then power off once the fade is done.
+    const delayMs = (lastEnd - now + PROTOCOL_END_FADE_SEC) * 1000 + 100;
+    this.protocolEndTimer = window.setTimeout(() => {
+      this.protocolEndTimer = null;
+      this.stop();
+      this.onProtocolEnd?.();
+    }, delayMs);
   }
 
   public destroy(): void { 
+    this.clearProtocolEndTimer();
     this.unmountCurrentPatch();
     this.merger?.disconnect();
     this.ctx?.close(); 
