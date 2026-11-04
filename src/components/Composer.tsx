@@ -334,7 +334,7 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol, onStopProtoc
                 className={`text-left p-3 rounded-lg border transition-all flex flex-col gap-1 group ${protocol.id === p.id ? 'bg-cyan-950/30 border-cyan-800' : 'bg-[#0d141e] border-[#16202c] hover:border-[#23384f]'}`}
               >
                 <div className={`font-bold text-[11px] truncate ${protocol.id === p.id ? 'text-cyan-400' : 'text-slate-300'}`}>{p.name}</div>
-                <div className="flex items-center justify-between text-[8px] text-slate-600 uppercase">
+                <div className="flex items-center justify-between text-[8px] text-slate-500 uppercase">
                   <span>{new Date(p.lastModified).toLocaleDateString()}</span>
                   <span className="group-hover:text-rose-500 transition-colors" onClick={(e) => { e.stopPropagation(); dbDelete(p.id!); }}>
                     <Trash2 className="w-3 h-3" />
@@ -350,7 +350,7 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol, onStopProtoc
                 className="text-left p-3 rounded-lg border bg-[#0d141e] border-[#16202c] hover:border-amber-800 transition-all flex flex-col gap-1 group"
               >
                 <div className="font-bold text-[11px] truncate text-amber-400/80 group-hover:text-amber-400">{b.name}</div>
-                <div className="flex items-center justify-between text-[8px] text-slate-600 uppercase">
+                <div className="flex items-center justify-between text-[8px] text-slate-500 uppercase">
                   <span>{b.bpm} BPM</span>
                   <span className="group-hover:text-rose-500 transition-colors" onClick={(e) => { e.stopPropagation(); dbDeleteBeat(b.id!); }}>
                     <Trash2 className="w-3 h-3" />

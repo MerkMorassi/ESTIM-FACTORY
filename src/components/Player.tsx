@@ -152,7 +152,7 @@ export const Player: React.FC<PlayerProps> = ({ engine, onPlayStateChange, exter
                   <div className="text-[11px] font-bold text-slate-200 group-hover:text-cyan-300">
                     {p.name}
                   </div>
-                  <div className="flex items-center gap-3 mt-1 text-[9px] text-slate-500">
+                  <div className="flex items-center gap-3 mt-1 text-[9px] text-slate-400">
                     <span className="flex items-center gap-1">
                       <Clock className="w-3 h-3" />
                       {new Date(p.totalDurationMs).toISOString().substr(14, 5)}

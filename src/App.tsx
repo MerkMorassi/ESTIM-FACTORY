@@ -1074,7 +1074,8 @@ export default function App() {
               params={params}
             />
 
-            <div className="flex items-center gap-2 border-b border-[#1a2634] pb-1 overflow-x-auto">
+            {/* Tabs wrap instead of scrolling: no native (light) scrollbar in the dark theme. */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[#1a2634] pb-1">
               {(['player', 'composer', 'ai', 'midi', 'profiler', 'sequencer', 'spectrum', 'ayurvedic', 'settings'] as const).map(t => (
                 <button key={t} onClick={() => setActiveTab(t)} className={`py-1.5 px-3 text-[10px] font-black rounded uppercase whitespace-nowrap ${activeTab === t ? 'bg-[#162433] text-cyan-300 border border-cyan-800' : 'text-slate-400 hover:text-slate-200 transition-colors'}`}>
                   {t === 'player' ? (
