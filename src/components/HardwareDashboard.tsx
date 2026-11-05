@@ -154,7 +154,7 @@ export const HardwareDashboard: React.FC<HardwareDashboardProps> = ({
       <div className="flex items-center justify-between gap-4 text-[8px] text-slate-500 bg-[#0d141e] p-3 rounded border border-[#172230]">
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-          <span>STEREO ISOLATION LAYER ENABLED. SIMULTANEOUS DUAL-CH OUTPUT ACTIVE.</span>
+          <span>STEREO OUTPUT: 2 AUDIO CHANNELS. CHANNEL ISOLATION DEPENDS ON YOUR STIM BOX.</span>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex flex-col items-end">

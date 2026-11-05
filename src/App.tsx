@@ -786,7 +786,7 @@ export default function App() {
       <div className="bg-[#12080a] border-b border-[#3b1219] px-4 py-1.5 text-[11px] flex items-center justify-between text-rose-300">
         <div className="flex items-center gap-2">
           <ShieldAlert className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-          <span><strong>CLINICAL SIMULATION ONLY:</strong> High-voltage leads isolation active. 30ms ramp invariants enforced.</span>
+          <span><strong>AUDIO SIGNAL ONLY, NOT A MEDICAL DEVICE:</strong> Electrical isolation comes from your stim box, not this app. Gain changes use 30 ms ramps in code.</span>
         </div>
         <div className="hidden sm:flex items-center gap-2 text-[10px] text-slate-400">
           <Split className="w-3 h-3" />
@@ -1166,7 +1166,7 @@ export default function App() {
           <Terminal className="w-3 h-3 text-cyan-500" />
           <span>DUAL-CH SYNTHESIS</span>
           <span>48kHz</span>
-          <span>SENSORY ISOLATION: ACTIVE</span>
+          <span>ISOLATION: STIM BOX (HARDWARE)</span>
         </div>
         <div className={isRunning ? 'text-emerald-500' : 'text-slate-700'}>
           {isRunning ? 'TRANSMITTING STEREO' : 'IDLE'}
