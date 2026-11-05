@@ -4,7 +4,7 @@
  * 
  * SIGNAL TELEMETRY PROFILER // E-Stim Simulation Audio Workbench
  * Precision Web Audio API low-level dual-layer signal architecture.
- * Strictly enforces 30ms linear/exponential pop-free ramping across envelope transitions.
+ * Applies 30 ms gain ramps (POP_FREE_RAMP_SEC) on envelope transitions.
  */
 
 import React, { useState, useEffect, useRef } from 'react';
