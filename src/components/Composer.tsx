@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * Composer: Clinical Protocol Design Studio
+ * Composer: Protocol Design Studio
  * Timeline-based DAW for designing multi-stage stimulation sequences.
  */
 
@@ -57,7 +57,7 @@ const DEFAULT_SEGMENT: Omit<ProtocolSegment, 'id'> = {
 };
 
 const INITIAL_PROTOCOL: StimulationProtocol = {
-  name: 'Standard Clinical Profile',
+  name: 'Standard Profile',
   description: 'Baseline arousal and recruitment sequence',
   totalDurationMs: 0,
   lastModified: Date.now(),
@@ -379,7 +379,7 @@ export const Composer: React.FC<ComposerProps> = ({ onPlayProtocol, onStopProtoc
                 className="bg-transparent border-none text-sm font-black text-slate-100 focus:outline-none focus:ring-0 w-64"
                 placeholder="Protocol Name..."
               />
-              <div className="text-[9px] text-slate-500 uppercase tracking-widest font-black">Clinical Design Studio</div>
+              <div className="text-[9px] text-slate-500 uppercase tracking-widest font-black">Protocol Design Studio</div>
             </div>
           </div>
 
