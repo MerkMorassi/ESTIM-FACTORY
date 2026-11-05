@@ -335,7 +335,7 @@ export const Player: React.FC<PlayerProps> = ({ engine, onPlayStateChange, exter
               </div>
               <div className="p-2 bg-[#101720] rounded border border-[#1a2634] flex items-center gap-2">
                 <ShieldCheck className="w-3.5 h-3.5 text-cyan-500" />
-                <span className="text-[9px] text-slate-400">ISOLATION BARRIER: <span className="text-cyan-400 font-bold">ACTIVE</span></span>
+                <span className="text-[9px] text-slate-400">ISOLATION: <span className="text-cyan-400 font-bold">STIM BOX (HARDWARE)</span></span>
               </div>
             </div>
 

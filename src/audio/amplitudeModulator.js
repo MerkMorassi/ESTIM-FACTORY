@@ -7,7 +7,7 @@
  * UNIX Philosophy:
  * - Single responsibility: Applies amplitude modulation to an arbitrary carrier input.
  * - Flat, pipeable node architecture: Input -> VCA Gain -> Output.
- * - Strict 30ms pop-free ramping invariant: Eliminates DC offset transients & switching pops.
+ * - 30 ms linear gain ramp on every step change (POP_FREE_RAMP_SEC) to reduce switching clicks.
  * 
  * Operational Range:
  * - Modulation Rate: 1 Hz to 150 Hz

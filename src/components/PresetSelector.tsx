@@ -13,7 +13,7 @@ export const CLINICAL_TENS_PRESETS: TelemetryPreset[] = [
   {
     id: 'interferential-4k',
     name: 'INTERFERENTIAL CARRIER',
-    description: '4000 Hz sinusoidal carrier with 100 Hz beat modulation. Minimizes skin impedance for deep penetrative recruitment.',
+    description: '4000 Hz sinusoidal carrier with 100 Hz beat modulation.',
     carrierFreq: 4000,
     carrierWave: 'sine',
     modFreq: 100,
@@ -169,7 +169,7 @@ export const EXPERIENCE_PROTOCOLS: TelemetryPreset[] = [
   {
     id: 'harmonic-scan',
     name: 'NERVE-FIBER HARMONIC SCAN',
-    description: '4000Hz high-carrier targets deep tissue with ultra-slow (0.5Hz) triangle modulation for rolling recruitment.',
+    description: '4000 Hz carrier with ultra-slow (0.5 Hz) triangle modulation for a rolling sensation.',
     carrierFreq: 4000,
     carrierWave: 'sine',
     modFreq: 0.5,
@@ -358,7 +358,7 @@ export const DUAL_STIM_LABIAL_VAGINAL: DualChannelPreset[] = [
   {
     id: 'binaural-tissue-beat',
     name: 'BINAURAL TISSUE BEAT',
-    description: '100Hz (L) vs 102Hz (R). Generates a deep 2Hz interference beat directly within the nerve clusters.',
+    description: '100 Hz (L) vs 102 Hz (R). The two channels differ by 2 Hz, intended to produce a 2 Hz beat where the fields overlap.',
     left: { carrierFreq: 100, carrierWave: 'sine', modFreq: 10, modWave: 'sine', modDepth: 0.8, mode: 'continuous', dutyCycle: 0.5, burstDurationMs: 50, targetImpedanceOhms: 1800 },
     right: { carrierFreq: 102, carrierWave: 'sine', modFreq: 10, modWave: 'sine', modDepth: 0.8, mode: 'continuous', dutyCycle: 0.5, burstDurationMs: 50, targetImpedanceOhms: 1500 },
   },
@@ -520,7 +520,7 @@ export const PresetSelector: React.FC<PresetSelectorProps> = ({
           <div className="flex items-center justify-between border-b border-[#1e293b] pb-2 text-slate-400">
             <span className="flex items-center gap-1.5 text-cyan-400 font-semibold">
               <Bookmark className="w-3.5 h-3.5" />
-              CLINICAL TENS PROTOCOLS
+              TENS-STYLE PRESETS (NOT MEDICAL)
             </span>
           </div>
           {renderPresetGrid(CLINICAL_TENS_PRESETS)}
